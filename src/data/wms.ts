@@ -98,7 +98,7 @@ function buildSite(fac: FacilityId): SiteStorage {
   let eid = 1;
   const node = (id: string, kind: WhNode['kind'], x: number, z: number, label: string) => { nodes.push({ id, facilityId: fac, kind, x: r2(x), z: r2(z), label }); return id; };
   const link = (a: WhNode | undefined, b: WhNode | undefined) => {
-    if (!a || !b) return;
+    if (!a || !b || a.id === b.id) return;
     edges.push({ id: eid++, facilityId: fac, from: a.id, to: b.id, metres: r2(Math.hypot(a.x - b.x, a.z - b.z)) });
   };
   const byId = (id: string) => nodes.find((n) => n.id === id);
@@ -106,8 +106,12 @@ function buildSite(fac: FacilityId): SiteStorage {
   const front: WhNode[] = [];
   for (const a of aisles) front.push(byId(node(`${fac}-F${a.letter}`, 'CROSS', a.x, FRONT_Z, `Cross aisle at ${a.letter}`))!);
   for (const [dockId, dx] of Object.entries(L.doors)) {
-    const f = byId(node(`${fac}-F${dockId.slice(fac.length + 1)}`, 'CROSS', dx, FRONT_Z, `Cross aisle at ${dockId}`))!;
-    front.push(f);
+    // a door in line with an aisle shares that aisle's cross-aisle point (no 0 m edge)
+    let f = front.find((n) => Math.abs(n.x - dx) < 0.05);
+    if (!f) {
+      f = byId(node(`${fac}-F${dockId.slice(fac.length + 1)}`, 'CROSS', dx, FRONT_Z, `Cross aisle at ${dockId}`))!;
+      front.push(f);
+    }
     const d = byId(node(dockId, 'DOCK', dx, DOCK_Z, dockId))!;
     link(d, f);
   }
