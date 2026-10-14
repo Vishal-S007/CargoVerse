@@ -3,14 +3,19 @@
 // Safe to run while `npm run dev` is running; every change it makes is put back.
 import { config } from '../config';
 import { OracleRepo } from './oracle';
+import { WmsEngine } from '../wms/engine';
+import { OracleWms } from '../wms/oracle-wms';
+import { sscc, siteStorage, shortestPath } from '../../src/data/wms';
 import type { FacilityId } from '../../src/data/types';
 import type { LabScenario } from '../../src/api/types';
 
-type Result = { name: string; ok: boolean; detail: string; ms: number };
+type Result = { name: string; ok: boolean; detail: string; ms: number; skipped?: boolean };
+class Skip extends Error {}
 const results: Result[] = [];
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
 
 async function check(name: string, fn: () => Promise<string>): Promise<void> {
   const t0 = Date.now();
@@ -20,6 +25,11 @@ async function check(name: string, fn: () => Promise<string>): Promise<void> {
     console.log(`  ${green('PASS')}  ${name}  ${dim(detail)}`);
   } catch (e) {
     const detail = String((e as Error).message ?? e).split('\n')[0];
+    if (e instanceof Skip) {
+      results.push({ name, ok: true, skipped: true, detail, ms: Date.now() - t0 });
+      console.log(`  ${yellow('SKIP')}  ${name}  ${dim(detail)}`);
+      return;
+    }
     results.push({ name, ok: false, detail, ms: Date.now() - t0 });
     console.log(`  ${red('FAIL')}  ${name}  ${detail}`);
   }
@@ -189,11 +199,183 @@ async function main(): Promise<void> {
     });
   }
 
+  await wmsChecks(ext, q, one, repo, oracledb);
+
   await ext.close();
   await repo.close();
   const failed = results.filter((r) => !r.ok);
-  console.log(`\n${failed.length ? red(`${failed.length} of ${results.length} checks failed`) : green(`All ${results.length} checks passed`)}`);
+  const skipped = results.filter((r) => r.skipped).length;
+  console.log(`\n${failed.length ? red(`${failed.length} of ${results.length} checks failed`) : green(`All ${results.length - skipped} checks passed`)}${skipped ? yellow(` · ${skipped} skipped (feature not available in this database)`) : ''}`);
   process.exit(failed.length ? 1 : 0);
 }
 
 main().catch((e) => { console.error(red(String((e as Error).stack ?? e))); process.exit(1); });
+
+// ================================================================ Smart Warehouse (10–12)
+async function wmsChecks(ext: any, q: (sql: string, b?: Record<string, unknown>) => Promise<any[]>, one: (sql: string, b?: Record<string, unknown>) => Promise<Record<string, any> | undefined>, repo: OracleRepo, oracledb: any): Promise<void> {
+  console.log('\n5 · Smart Warehouse');
+  const has = async (sql: string) => { try { return Number((await one(sql))?.N ?? 0) > 0; } catch { return false; } };
+  await check('warehouse objects exist and are valid', async () => {
+    const need = ['LOTS', 'BIN_STOCK', 'LOT_MOVES', 'STORAGE_BINS', 'WH_NODES', 'WH_EDGES', 'SENSORS', 'SENSOR_READINGS', 'STOCK_LEDGER', 'WT_WMS', 'WT_EVENTS',
+      'TRG_LOT_MOVES_AI', 'V_SKU_ABC', 'V_FEFO_VIOLATIONS', 'V_TRACE_LINKS', 'V_DEMAND_FORECAST', 'V_REPLENISHMENT'];
+    const rows = await q(`SELECT object_name, MIN(status) AS status FROM user_objects WHERE object_name IN (${need.map((n) => `'${n}'`).join(', ')}) GROUP BY object_name`);
+    const found = new Map(rows.map((r: any) => [r.OBJECT_NAME, r.STATUS]));
+    const missing = need.filter((n) => !found.has(n));
+    assert(!missing.length, `missing: ${missing.join(', ')} — run npm run db:lab`);
+    // objects invalidated by 12_wms_optional.sql recompile on first use
+    await ext.execute(`BEGIN DBMS_UTILITY.COMPILE_SCHEMA(schema => USER, compile_all => FALSE); END;`);
+    const bad = (await q(`SELECT object_name FROM user_objects WHERE status = 'INVALID' AND object_name IN (${need.map((n) => `'${n}'`).join(', ')})`)).map((r: any) => r.OBJECT_NAME);
+    assert(!bad.length, `invalid: ${bad.join(', ')}`);
+    const bins = await one('SELECT COUNT(*) AS n FROM storage_bins');
+    return `${need.length} objects VALID · ${bins!.N} storage bins`;
+  });
+
+  // lots are created from the inventory by the server's first start; do it here if it never ran
+  const lotsN = Number((await one('SELECT COUNT(*) AS n FROM lots'))?.N ?? 0);
+  if (!lotsN) {
+    await check('opening stock placed in bins', async () => {
+      const { world } = await repo.loadWorld();
+      const eng = new WmsEngine();
+      const n = eng.initFromInventory(world);
+      await new OracleWms(repo.wmsDeps()!).persist(eng.takePending());
+      return `${n} pallets in ${eng.lots.size} lots`;
+    });
+  }
+
+  await check('GS1 check digit enforced by a CHECK constraint', async () => {
+    const good = sscc(424242);
+    const bad = `${good.slice(0, 17)}${(Number(good[17]) + 1) % 10}`;
+    const v = await one(`SELECT wt_wms.valid_sscc(:g) AS g, wt_wms.valid_sscc(:b) AS b FROM dual`, { g: good, b: bad });
+    assert(v?.G === 'Y' && v?.B === 'N', `valid_sscc gave ${v?.G}/${v?.B}`);
+    const free = await one(`SELECT b.bin_id FROM storage_bins b WHERE NOT EXISTS (SELECT 1 FROM bin_stock s WHERE s.bin_id = b.bin_id) FETCH FIRST 1 ROW ONLY`);
+    const lot = await one(`SELECT lot_id FROM lots FETCH FIRST 1 ROW ONLY`);
+    assert(free && lot, 'no free bin or no lot to test with');
+    try {
+      await ext.execute(`INSERT INTO bin_stock (bin_id, sscc, lot_id, units) VALUES (:b, :c, :l, 1)`, { b: free.BIN_ID, c: bad, l: lot.LOT_ID });
+      throw new Error('a wrong check digit was accepted');
+    } catch (e) {
+      const m = String((e as Error).message);
+      if (/accepted/.test(m)) throw e;
+      assert(/ORA-02290/.test(m), m.split('\n')[0]);
+    } finally {
+      await ext.rollback();
+    }
+    return `${bad} → ORA-02290 (ck_bs_sscc)`;
+  });
+
+  await check('FEFO: WT_WMS.FEFO_LOT picks the earliest expiry', async () => {
+    const r = await one(`SELECT l.facility_id, l.sku_id, wt_wms.fefo_lot(l.facility_id, l.sku_id) AS lot,
+                                (SELECT MIN(x.expiry_date) FROM lots x WHERE x.facility_id = l.facility_id AND x.sku_id = l.sku_id AND x.qc_status = 'RELEASED'
+                                    AND EXISTS (SELECT 1 FROM bin_stock b WHERE b.lot_id = x.lot_id)) AS min_exp
+                           FROM lots l WHERE l.expiry_date IS NOT NULL AND l.qc_status = 'RELEASED' AND EXISTS (SELECT 1 FROM bin_stock b WHERE b.lot_id = l.lot_id)
+                          FETCH FIRST 1 ROW ONLY`);
+    if (!r) throw new Skip('no released lot with an expiry date in the racks');
+    const chosen = await one(`SELECT expiry_date AS e FROM lots WHERE lot_id = :l`, { l: r.LOT });
+    assert(String(chosen?.E) === String(r.MIN_EXP), `picked ${r.LOT} (${chosen?.E}) but the earliest is ${r.MIN_EXP}`);
+    const v = await one(`SELECT COUNT(*) AS n FROM v_fefo_violations`);
+    return `${r.SKU_ID} at ${r.FACILITY_ID}: ${r.LOT} · ${v!.N} FEFO violation(s) in the audit`;
+  });
+
+  await check('ABC analysis, forecast (MODEL) and reorder points', async () => {
+    const abc = await q(`SELECT facility_id, sku_id, abc_class FROM v_sku_abc`);
+    assert(abc.length > 0, 'v_sku_abc returned no rows');
+    const fc = await q(`SELECT * FROM v_demand_forecast WHERE facility_id = 'WH-04' AND sku_id = 'MED-INS'`);
+    assert(fc.length === 14, `forecast has ${fc.length} days, expected 14`);
+    const rp = await q(`SELECT action FROM v_replenishment`);
+    assert(rp.length > 0, 'v_replenishment returned no rows');
+    return `${abc.length} products classified (${abc.filter((r: any) => r.ABC_CLASS === 'A').length} A) · 14-day forecast · ${rp.filter((r: any) => r.ACTION === 'REORDER').length} to reorder`;
+  });
+
+  await check('recall trace (recursive WITH over V_TRACE_LINKS)', async () => {
+    const root = await one(`SELECT lot_id FROM lots ORDER BY units_received - units_on_hand DESC FETCH FIRST 1 ROW ONLY`);
+    if (!root) throw new Skip('no lots yet');
+    const rows = await new OracleWms(repo.wmsDeps()!).trace('LOT', root.LOT_ID, 'down');
+    return `lot ${root.LOT_ID}: ${rows.length - 1} linked record(s)${rows.some((r) => r.kind === 'STORE') ? ' incl. stores' : ''}`;
+  });
+
+  await check('cold chain: MATCH_RECOGNIZE finds a breach and holds the lots', async () => {
+    // three warm readings, inside a transaction that is rolled back afterwards
+    try {
+      // a second or two ahead, so no real reading from a running server falls in between
+      for (const s of [1, 2, 3]) {
+        await ext.execute(`INSERT INTO sensor_readings (sensor_id, read_at, temp_c) VALUES ('TS-04-C1', SYSTIMESTAMP + NUMTODSINTERVAL(:s, 'SECOND'), 12.5)`, { s });
+      }
+      const r = await ext.execute('BEGIN :n := wt_wms.detect_breaches; END;', { n: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER } });
+      const n = Number(r.outBinds.n);
+      const b = await one(`SELECT peak_c, readings_out, lots_held FROM cold_breaches WHERE sensor_id = 'TS-04-C1' ORDER BY breach_id DESC FETCH FIRST 1 ROW ONLY`);
+      assert(b, 'no breach recorded');
+      return `${n} new breach(es) · peak ${b.PEAK_C} °C · ${b.LOTS_HELD} lot(s) held (rolled back)`;
+    } finally {
+      await ext.rollback();
+    }
+  });
+
+  await check('Dijkstra in PL/SQL agrees with the application', async () => {
+    const site = siteStorage('WH-04');
+    const target = site.bins[site.bins.length - 1].nodeId;
+    const r = await one(`SELECT wt_wms.shortest_path('WH-04-I1', :t) AS j FROM dual`, { t: target });
+    const db = JSON.parse(String(r!.J));
+    const app = shortestPath(site, 'WH-04-I1', target);
+    assert(Math.abs(Number(db.metres) - app.metres) < 0.05, `database ${db.metres} m, application ${app.metres} m`);
+    return `WH-04-I1 → ${target}: ${db.metres} m over ${db.nodes.length} nodes`;
+  });
+
+  await check('interval partitioning of SENSOR_READINGS', async () => {
+    if (!(await has(`SELECT COUNT(*) AS n FROM user_part_tables WHERE table_name = 'SENSOR_READINGS'`))) throw new Skip('not partitioned (12_wms_optional.sql skipped it)');
+    const p = await one(`SELECT COUNT(*) AS n FROM user_tab_partitions WHERE table_name = 'SENSOR_READINGS'`);
+    return `${p!.N} partition(s), one per day`;
+  });
+
+  await check('blockchain table refuses changes', async () => {
+    if (!(await has(`SELECT COUNT(*) AS n FROM user_blockchain_tables WHERE table_name = 'STOCK_LEDGER'`))) throw new Skip('STOCK_LEDGER is not a blockchain table here');
+    try {
+      await ext.execute('UPDATE stock_ledger SET units = units + 1 WHERE ROWNUM = 1');
+      const n = Number((await one('SELECT COUNT(*) AS n FROM stock_ledger'))?.N ?? 0);
+      if (n) throw new Error('an UPDATE of the ledger was allowed');
+      return 'ledger is empty (start the server to fill it)';
+    } catch (e) {
+      const m = String((e as Error).message);
+      if (/allowed/.test(m)) throw e;
+      assert(/ORA-05715|ORA-0571/.test(m), m.split('\n')[0]);
+    } finally {
+      await ext.rollback();
+    }
+    const v = await ext.execute(`DECLARE n NUMBER; BEGIN DBMS_BLOCKCHAIN_TABLE.VERIFY_ROWS(schema_name => USER, table_name => 'STOCK_LEDGER', number_of_rows_verified => n); :n := n; END;`,
+      { n: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER } });
+    return `UPDATE → ORA-05715 · VERIFY_ROWS ok (${v.outBinds.n} rows)`;
+  });
+
+  await check('AI Vector Search', async () => {
+    const t = await one(`SELECT data_type AS t FROM user_tab_columns WHERE table_name = 'DAMAGE_REPORTS' AND column_name = 'EMBEDDING'`);
+    if (String(t?.T) !== 'VECTOR') throw new Skip('no VECTOR type (Oracle 23ai needed); the server compares embeddings itself');
+    const d = await one(`SELECT ROUND(VECTOR_DISTANCE(TO_VECTOR('[1,0,0]'), TO_VECTOR('[0.8,0.6,0]'), COSINE), 3) AS d FROM dual`);
+    const e = await one(`SELECT COUNT(*) AS n, MAX(embed_model) AS m FROM damage_reports WHERE embedding IS NOT NULL`);
+    return `VECTOR_DISTANCE works (${d!.D}) · ${e!.N} reports embedded${e!.M ? ` with ${e!.M}` : ' (start the server to embed them)'}`;
+  });
+
+  await check('Transactional Event Queue', async () => {
+    if (!(await has(`SELECT COUNT(*) AS n FROM user_queues WHERE name = 'CV_EVENTS'`))) throw new Skip('no CV_EVENTS queue; events are read from WMS_EVENTS');
+    const before = Number((await one('SELECT NVL(MAX(event_id), 0) AS n FROM wms_events'))?.N ?? 0);
+    await ext.execute(`BEGIN wt_events.publish('SELFTEST', NULL, 'db:selftest event'); END;`);
+    await ext.commit();
+    const r = await ext.execute('BEGIN :r := wt_events.dequeue_batch(3, 50); END;', { r: { dir: oracledb.BIND_OUT, type: oracledb.STRING, maxSize: 32767 } });
+    await ext.commit();
+    const msgs = JSON.parse(String(r.outBinds.r || '[]')) as { id: number; type: string }[];
+    const mine = msgs.find((m) => m.type === 'SELFTEST' && m.id > before);
+    return mine ? `published and dequeued (event ${mine.id})` : 'published (a running server took it off the queue first)';
+  });
+
+  await check('scheduler job watches the cold chain', async () => {
+    const j = await one(`SELECT enabled, state, ${"TO_CHAR(last_start_date, 'HH24:MI:SS')"} AS last FROM user_scheduler_jobs WHERE job_name = 'CV_DETECT_BREACHES'`);
+    if (!j) throw new Skip('no CV_DETECT_BREACHES job (needs CREATE JOB); the server runs the detector instead');
+    assert(j.ENABLED === 'TRUE', `job is ${j.STATE}`);
+    return `enabled · ${j.STATE}${j.LAST ? ` · last run ${j.LAST}` : ''}`;
+  });
+
+  await check('SQL property graph (GRAPH_TABLE)', async () => {
+    if (!(await has(`SELECT COUNT(*) AS n FROM user_property_graphs WHERE graph_name = 'CV_WAREHOUSE_GRAPH'`))) throw new Skip('no property graph (Oracle 23ai needed)');
+    const r = await new OracleWms(repo.wmsDeps()!).graphQuery('WH-04-I1');
+    assert(r.ok, r.error ?? 'query failed');
+    return `${r.rows} aisle points within 6 segments of WH-04-I1`;
+  });
+}

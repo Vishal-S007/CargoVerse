@@ -11,6 +11,7 @@ import {
   ROLES, PERMISSIONS, ROLE_PERMS, JOB_TITLES, EMPLOYEES, USERS, DEMO_PASSWORDS, FORKLIFT_OPERATORS, CARRIERS, carrierId, SEED_TASKS, LICENSES,
 } from './people';
 import { hashPassword } from '../auth';
+import { wmsSeedSql } from './gen-wms-seed';
 
 const q = (v: string | null | undefined) => (v === null || v === undefined ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
 const n = (v: number | null | undefined, digits = 3) => (v === null || v === undefined || Number.isNaN(v) ? 'NULL' : String(Math.round(v * 10 ** digits) / 10 ** digits));
@@ -226,3 +227,8 @@ for (const f of Object.values(w.forklifts)) if (!LAYOUTS[f.facilityId].chargers[
 const file = resolve(process.cwd(), 'db/oracle/04_seed.sql');
 writeFileSync(file, out.join('\n') + '\n');
 console.log(`wrote ${file} (${out.length} lines)`);
+
+const wmsFile = resolve(process.cwd(), 'db/oracle/11_wms_seed.sql');
+const wmsSql = wmsSeedSql(w);
+writeFileSync(wmsFile, wmsSql);
+console.log(`wrote ${wmsFile} (${wmsSql.split('\n').length} lines)`);

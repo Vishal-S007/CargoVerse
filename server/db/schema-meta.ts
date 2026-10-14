@@ -165,6 +165,10 @@ export const TABLE_GROUPS: Record<string, string> = {
   SHIPPING_LINES: 'Port', PORT_BERTHS: 'Port', VESSELS: 'Port', QUAY_CRANES: 'Port', VESSEL_CALLS: 'Port', YARD_BLOCKS: 'Port', CONTAINER_MOVES: 'Port', YARD_CONTAINERS: 'Port',
   STORES: 'Stores', STORE_STOCK: 'Stores', DELIVERY_VANS: 'Stores', STORE_ORDERS: 'Stores', STORE_ORDER_HISTORY: 'Stores',
   DB_COMMANDS: 'Database Lab', DOCK_BOOKINGS: 'Database Lab', LAB_STOCK: 'Database Lab', DB_ACCOUNTS: 'Security',
+  SKU_HANDLING: 'Smart warehouse', WH_NODES: 'Smart warehouse', WH_EDGES: 'Smart warehouse', STORAGE_BINS: 'Smart warehouse', LOTS: 'Smart warehouse',
+  BIN_STOCK: 'Smart warehouse', LOT_MOVES: 'Smart warehouse', STOCK_LEDGER: 'Smart warehouse', SKU_DAILY_DEMAND: 'Smart warehouse', SENSORS: 'Smart warehouse',
+  SENSOR_READINGS: 'Smart warehouse', COLD_BREACHES: 'Smart warehouse', SCAN_LOG: 'Smart warehouse', DAMAGE_REPORTS: 'Smart warehouse',
+  WMS_SETTINGS: 'Smart warehouse', WMS_EVENTS: 'Smart warehouse',
   PARK_COMPANIES: 'Logistics park', PARK_BUILDINGS: 'Logistics park', PARK_ROUTES: 'Logistics park', PARK_VEHICLES: 'Logistics park', PARK_GATES: 'Logistics park', PARK_GATE_LOG: 'Logistics park',
 };
 

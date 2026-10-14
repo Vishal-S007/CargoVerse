@@ -90,7 +90,7 @@ async function runFile(conn: any, oracledb: any, f: string, opts: { soft?: boole
     }
   }
   // surface PL/SQL compilation errors, which Oracle reports as warnings
-  if (/plsql|lab|security/.test(f)) {
+  if (/plsql|lab|security|wms/.test(f)) {
     const errs = await conn.execute(`SELECT name, type, line, text FROM user_errors ORDER BY name, sequence`, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT });
     if (errs.rows.length) {
       console.error('\nPL/SQL compilation errors:');
@@ -103,12 +103,16 @@ async function runFile(conn: any, oracledb: any, f: string, opts: { soft?: boole
   return warnings;
 }
 
-/** 06–09: live control from SQL, concurrency lab, row-level security. */
+/** 06–12: live control from SQL, concurrency lab, Smart Warehouse, row-level security. */
 async function installLab(conn: any, oracledb: any): Promise<void> {
   await runFile(conn, oracledb, '06_lab.sql');
   process.stdout.write('  07_security_sys.sql (as SYS) … ');
   const a = await runSys(oracledb, '07_security_sys.sql');
   console.log(a.ok ? `ok (${a.how})` : `skipped — ${a.detail}`);
+  // the Smart Warehouse comes before 08, so its tables get the row-level security policies too
+  await runFile(conn, oracledb, '10_wms.sql');
+  await runFile(conn, oracledb, '11_wms_seed.sql');
+  const opt = await runFile(conn, oracledb, '12_wms_optional.sql', { soft: true });
   const vpd = await runFile(conn, oracledb, '08_security.sql', { soft: true });
   process.stdout.write('  09_security_sys.sql (as SYS) … ');
   const b = await runSys(oracledb, '09_security_sys.sql');
@@ -121,6 +125,26 @@ async function installLab(conn: any, oracledb: any): Promise<void> {
   console.log('  ✓ Live control from SQL (DB_COMMANDS queue + 7 triggers)');
   console.log('  ✓ Concurrency lab (DOCK_BOOKINGS, LAB_STOCK, WT_LAB.BOOK_DOCK)');
   console.log('  ✓ Time machine (Oracle Flashback Query — needs no setup)');
+  const one = async (sql: string) => { try { return (await conn.execute(sql, {}, { outFormat: oracledb.OUT_FORMAT_OBJECT })).rows[0] ?? {}; } catch { return {}; } };
+  const w = {
+    bins: Number((await one(`SELECT COUNT(*) AS n FROM storage_bins`)).N ?? 0),
+    part: Number((await one(`SELECT COUNT(*) AS n FROM user_part_tables WHERE table_name = 'SENSOR_READINGS'`)).N ?? 0) > 0,
+    bc: Number((await one(`SELECT COUNT(*) AS n FROM user_blockchain_tables WHERE table_name = 'STOCK_LEDGER'`)).N ?? 0) > 0,
+    vec: String((await one(`SELECT data_type AS t FROM user_tab_columns WHERE table_name = 'DAMAGE_REPORTS' AND column_name = 'EMBEDDING'`)).T ?? '') === 'VECTOR',
+    q: Number((await one(`SELECT COUNT(*) AS n FROM user_queues WHERE name = 'CV_EVENTS'`)).N ?? 0) > 0,
+    jobs: Number((await one(`SELECT COUNT(*) AS n FROM user_scheduler_jobs WHERE job_name LIKE 'CV%'`)).N ?? 0),
+    graph: Number((await one(`SELECT COUNT(*) AS n FROM user_property_graphs WHERE graph_name = 'CV_WAREHOUSE_GRAPH'`)).N ?? 0) > 0,
+  };
+  const mark = (ok: boolean) => (ok ? '✓' : '✗');
+  console.log(`\nSmart Warehouse: ${w.bins} storage bins, lots / FEFO / ABC / recall / scans / forecasting`);
+  console.log(`  ${mark(w.part)} Interval partitioning (SENSOR_READINGS)`);
+  console.log(`  ${mark(w.bc)} Blockchain table (STOCK_LEDGER)`);
+  console.log(`  ${mark(w.vec)} AI Vector Search (VECTOR embeddings)`);
+  console.log(`  ${mark(w.q)} Transactional Event Queue (CV_EVENTS)`);
+  console.log(`  ${mark(w.jobs > 0)} Scheduler jobs (${w.jobs})`);
+  console.log(`  ${mark(w.graph)} SQL property graph (CV_WAREHOUSE_GRAPH)`);
+  if (opt.length) console.log(`    Skipped: ${[...new Set(opt)].slice(0, 4).join(' | ')}`);
+  if (!w.bc || !w.q || !w.jobs) console.log('    The ✗ features need Oracle 23ai and the grants in 07_security_sys.sql; everything else works without them.');
   if (policies > 0 && accounts === ADMIN_ACCOUNTS.length) {
     console.log(`  ✓ Row-level security: ${policies} tables protected; SQL Developer accounts ${ADMIN_ACCOUNTS.join(', ')} (password ${config.lab.accountPassword})`);
   } else {

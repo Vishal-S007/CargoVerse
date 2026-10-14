@@ -788,6 +788,8 @@ export class MemoryRepo implements Repo {
     return { statement: sql.trim().replace(/;\s*$/, ''), rowsAffected: 1, ms: Math.round(performance.now() - t0), queued: 1, source: 'simulated' };
   }
 
+  wmsDeps() { return null; }
+
   async flashback(): Promise<TimeFrame> { throw new AppError(501, 'Flashback Query needs Oracle; using the server\'s in-memory history instead'); }
   async rowHistory(): Promise<RowHistory> { throw new AppError(501, 'Flashback Versions Query needs Oracle'); }
 

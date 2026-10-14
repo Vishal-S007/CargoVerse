@@ -13,6 +13,7 @@ import type {
 } from '../../src/api/types';
 import type { TimeFrame } from '../../src/data/timeframe';
 import type { SimOp } from '../../src/sim/engine';
+import type { WmsDeps } from '../wms/oracle-wms';
 
 export class AppError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -184,6 +185,9 @@ export interface Repo {
   rowHistory(kind: string, id: string, seconds: number): Promise<RowHistory>;
   vpdReport(): Promise<VpdReport>;
   runLab(userId: number, scenario: LabScenario): Promise<LabRun>;
+
+  /** Smart Warehouse: database access for the warehouse module (null without Oracle). */
+  wmsDeps(): WmsDeps | null;
 }
 
 export type SqlSource = 'api' | 'sim' | 'live';

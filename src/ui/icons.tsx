@@ -35,6 +35,14 @@ export function SkuGlyph({ icon, size = 22 }: { icon: SkuIcon; size?: number }) 
           <path d="M12 12v9l-9-4.5v-9z" fill="#2449c9" />
         </svg>
       );
+    case 'medical':
+      return (
+        <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden>
+          <rect x="3" y="5" width="18" height="14" rx="3" fill="#e8f1ff" stroke="#5d8cf0" strokeWidth="1.4" />
+          <path d="M10.4 8h3.2v2.8h2.8V14h-2.8v2.8h-3.2V14H7.6v-3.2h2.8z" fill="#2f5bea" />
+          <path d="M18.5 3.5l1 1.7 1.9.3-1.4 1.3.3 1.9-1.8-.9-1.7.9.3-1.9-1.4-1.3 1.9-.3z" fill="#7fc4ff" />
+        </svg>
+      );
     case 'helmet':
       return (
         <svg width={s} height={s} viewBox="0 0 24 24" aria-hidden>

@@ -49,6 +49,19 @@ export type SimOp =
 export type TradeType = 'IMPORT' | 'EXPORT' | 'EMPTY';
 
 let sink: ((op: SimOp) => void) | null = null;
+
+/**
+ * Lot numbers for pallets. The server's warehouse-management module assigns real lots: one lot per
+ * inbound shipment, and first-expiry-first-out when a pallet is taken out of storage. Without it
+ * (the browser-only demo) a lot number is made up.
+ */
+export interface LotHooks {
+  receive: (w: WorldState, facilityId: FacilityId, skuId: string, shipmentId: string, palletId: string) => string;
+  pick: (w: WorldState, facilityId: FacilityId, skuId: string, shipmentId: string, palletId: string) => string;
+}
+let lotHooks: LotHooks | null = null;
+export function setLotHooks(h: LotHooks | null): void { lotHooks = h; }
+const madeUpLot = (w: WorldState) => `L${2500 + (w.nextPallet % 9)}-${String(w.nextPallet % 1000).padStart(3, '0')}`;
 export function setSimSink(fn: ((op: SimOp) => void) | null): void { sink = fn; }
 const emit = (op: SimOp) => { if (sink) sink(op); };
 
@@ -474,7 +487,7 @@ function doPick(w: WorldState, f: Forklift): void {
     const id = `PAL-${w.nextPallet++}`;
     w.pallets[id] = {
       id, facilityId: f.facilityId, skuId: sku.id, qty: sku.unitsPerPallet, weightKg: sku.kgPerPallet,
-      lot: `L${2500 + (w.nextPallet % 9)}-${String(w.nextPallet % 1000).padStart(3, '0')}`,
+      lot: lotHooks ? lotHooks.receive(w, f.facilityId, sku.id, t.shipmentId, id) : madeUpLot(w),
       received: `Today, ${clock(w.simTime)}`, slot: null, forkliftId: f.id, featured: false, reserved: false,
     };
     f.palletId = id;
@@ -499,7 +512,7 @@ function doPick(w: WorldState, f: Forklift): void {
     const id = `PAL-${w.nextPallet++}`;
     w.pallets[id] = {
       id, facilityId: f.facilityId, skuId: sku.id, qty: sku.unitsPerPallet, weightKg: sku.kgPerPallet,
-      lot: `L${2500 + (w.nextPallet % 9)}-${String(w.nextPallet % 1000).padStart(3, '0')}`,
+      lot: lotHooks ? lotHooks.pick(w, f.facilityId, sku.id, t.shipmentId, id) : madeUpLot(w),
       received: 'In stock', slot: null, forkliftId: f.id, featured: false, reserved: false,
     };
     f.palletId = id;

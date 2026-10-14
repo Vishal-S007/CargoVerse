@@ -232,13 +232,13 @@ function GlassBlock({ x0, x1, depth, h }: { x0: number; x1: number; depth: numbe
   );
 }
 
-export function Site({ L, label }: { L: FacilityLayout; label: string }) {
+export function Site({ L, label, xray = false }: { L: FacilityLayout; label: string; xray?: boolean }) {
   return (
     <group>
       <Ground L={L} />
       <YardMarkings L={L} />
       <Fence L={L} />
-      <Building L={L} label={label} />
+      {!xray && <Building L={L} label={label} />}
       {L.trees.map((t, i) => (
         <group key={`tr${i}`} position={[t.x, 0, t.z]}><Tree s={1 + ((i * 37) % 5) / 10} /></group>
       ))}

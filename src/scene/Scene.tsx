@@ -15,6 +15,7 @@ import { storeBuilding } from '../data/city';
 import { remainingPts, legYardIn, legReverseIn } from '../sim/paths';
 import { cachedLength } from '../sim/engine';
 import { Site } from './Site';
+import { XRay, RecallRings } from './XRay';
 import { Dynamic, useSelectHandlers } from './Dynamic';
 import { Pin } from './models';
 import { glowTexture } from './materials';
@@ -114,6 +115,18 @@ function CameraRig({ facilityId }: { facilityId: FacilityId }) {
       case 'rotateRight': animateTo({ az: azimuth() + Math.PI / 4 }); break;
       case 'home': animateTo(homeOf(facilityId)); break;
       case 'overview': animateTo(overview(), 0.9); break;
+      case 'xray': {
+        // frame the open building in the part of the screen the Work panel leaves free
+        const B = LAYOUTS[c.facility].building;
+        const centre = toPark(c.facility, { x: (B.x0 + B.x1) / 2, z: -B.depth / 2 });
+        const panel = (document.querySelector('.work') as HTMLElement | null)?.getBoundingClientRect().width ?? 0;
+        const free = Math.max(320, size.width - panel);
+        const zoom = Math.min(controls.maxZoom, (free * 0.82) / ((B.x1 - B.x0 + B.depth) * 0.82));
+        const az = Math.PI / 4;
+        const shift = (size.width - free) / 2 / zoom;
+        animateTo({ tx: centre.x + Math.cos(az) * shift, tz: centre.z - Math.sin(az) * shift, az, zoom }, 0.9);
+        break;
+      }
       case 'focus': {
         const p = entityWorldPos(getWorld(), c.ref);
         if (!p) break;
@@ -451,6 +464,7 @@ function Projector() {
 export function WarehouseScene() {
   const downAt = useRef<{ x: number; y: number } | null>(null);
   const facilityId = useApp((s) => s.facilityId);
+  const xrayFac = useApp((s) => s.xray.facility);
   useApp((s) => s.tick);
   const sites: FacilityId[] = ['WH-01', 'WH-02', 'WH-04'];
   return (
@@ -483,8 +497,9 @@ export function WarehouseScene() {
         const visible = !!getWorld().facilities[fac]; // sites outside the user's access show buildings only
         return (
           <group key={fac} position={[o.x, 0, o.z]}>
-            <Site L={LAYOUTS[fac]} label={fac} />
-            <BuildingHitbox facilityId={fac} />
+            <Site L={LAYOUTS[fac]} label={fac} xray={xrayFac === fac} />
+            {xrayFac !== fac && <BuildingHitbox facilityId={fac} />}
+            {visible && <XRay facilityId={fac} />}
             {visible && <Dynamic facilityId={fac} />}
           </group>
         );
@@ -492,6 +507,7 @@ export function WarehouseScene() {
       <SelectionFx />
       <HoverFx />
       <SkuHighlight />
+      <RecallRings />
       <Projector />
     </Canvas>
   );

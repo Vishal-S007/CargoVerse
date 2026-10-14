@@ -17,7 +17,9 @@ A warehouse and logistics operations system:
 - a **Database Lab** that shows what only a real database can do: drive the 3D city with an `UPDATE`
   typed in SQL Developer, rewind the whole city with **Oracle Flashback**, give every operator a database
   account that **Oracle itself** limits to their sites (**Virtual Private Database**), and replay
-  **concurrency** problems — double booking, lost update, deadlock — with two real sessions.
+  **concurrency** problems — double booking, lost update, deadlock — with two real sessions;
+- a **Smart Warehouse** where every pallet has a lot, a rack bin and a GS1 label, and Oracle decides what to
+  pick (FEFO), where to store it (ABC slotting), when to stop (cold-chain breaches) and where a recalled lot went.
 
 ```
 Browser (React + Three.js)  ──HTTP / live stream──▶  Node API server  ──node-oracledb──▶  Oracle Database
@@ -72,7 +74,7 @@ Change these passwords (Users tab, signed in as admin) before showing the system
 
 **Work → DB Lab** (administrators and managers) and the clock button in the header.
 `npm run db:setup` installs it; on a database you already have, `npm run db:lab` adds it **without
-touching your data**. Check it end to end with `npm run db:selftest` (15 checks, PASS/FAIL).
+touching your data**. Check it end to end with `npm run db:selftest` (about 30 checks, PASS/FAIL/SKIP).
 A 5-minute presentation script is in [`docs/DEMO.md`](docs/DEMO.md).
 
 | Feature | What you see | What Oracle does |
@@ -83,6 +85,28 @@ A 5-minute presentation script is in [`docs/DEMO.md`](docs/DEMO.md).
 | **Concurrency lab** | Four experiments on a timeline: double booking (prevented), lost update (shown), the `FOR UPDATE` fix, and a deadlock. | Two real sessions; row locks, `SELECT … FOR UPDATE WAIT`, a unique key, and `ORA-00060` deadlock detection. |
 
 Without Oracle (`npm run dev:memory`) every tab still works with simulated results, clearly labelled.
+
+## Smart Warehouse
+
+**Work → Warehouse** (everyone; actions need a manager). Each building has racks with bins (an *X-ray* view in 3D
+takes the roof off), every pallet a lot and a GS1 SSCC label. Installed by `npm run db:lab` (`db:wms` is the same).
+
+| Feature | What it does | Oracle / SQL |
+| --- | --- | --- |
+| **ABC slotting** | Ranks products by demand, re-slots fast movers next to the docks; walk per pick drops by about half | `RATIO_TO_REPORT`, running `SUM() OVER`, bins' distance over the aisle graph |
+| **Lots & FEFO** | Every pick takes the lot that expires first; an audit lists any pick that did not | `WT_WMS.FEFO_LOT`, `RANK() OVER`, `V_FEFO_VIOLATIONS` (balance from the ledger) |
+| **Recall trace** | Ship → container → lot → store order → store in one query; recall creates the tasks | Recursive `WITH … SEARCH DEPTH FIRST … CYCLE` over `V_TRACE_LINKS`, `WT_WMS.RECALL_LOT` |
+| **Cold chain** | 2–8 °C cold room with sensors; prop the door open and watch the lots go on hold | `MATCH_RECOGNIZE`, interval-partitioned `SENSOR_READINGS`, `DBMS_SCHEDULER` job |
+| **Tamper-proof ledger** | Every stock movement in a ledger nobody can edit | **Blockchain table** + `DBMS_BLOCKCHAIN_TABLE.VERIFY_ROWS` |
+| **Forecast & reorder** | 14-day demand forecast, reorder point, safety stock, EOQ; raises purchase-order tasks | `MODEL` clause, `REGR_SLOPE`, `STDDEV` |
+| **GS1 scanning** | Scan a pallet label (camera, USB scanner or click); the check digit is enforced in the database | `CHECK` constraint for the SSCC check digit, `WT_WMS.SCAN` |
+| **Event stream** | Breaches, recalls, scans, receipts arrive the moment they are committed | **Transactional Event Queue** `CV_EVENTS` |
+| **Pick route** | Shortest route through the aisles for a pick list, drawn on the floor | Dijkstra in PL/SQL, **SQL property graph** `GRAPH_TABLE` |
+| **Semantic search** | "broken glass" finds "cracked diffusers" in the damage reports | **AI Vector Search**: `VECTOR(384)`, `VECTOR_DISTANCE` |
+
+The features in bold need Oracle 23ai (the Docker image is 23ai); on older releases they are skipped and the
+rest still works. For real sentence embeddings run `npm run ai:model` once (downloads the all-MiniLM-L6-v2 model,
+about 25 MB, on first use); without it a built-in embedding is used.
 
 ## AI agents
 
@@ -108,7 +132,8 @@ Two agents sit in the **Work** panel (and the ✦ button in the header):
 | `npm run build` then `npm start` | Production build; the API also serves the website on http://localhost:4000 |
 | `npm run typecheck` | TypeScript checks for the website and the server |
 | `npm run db:lab` | Install or update the Database Lab on the existing schema (keeps your data) |
-| `npm run db:selftest` | Check the four Database Lab features against Oracle and print PASS/FAIL |
+| `npm run db:selftest` | Check the Database Lab and Smart Warehouse features against Oracle (PASS/FAIL/SKIP) |
+| `npm run ai:model` | Install the sentence-transformer for semantic search (optional) |
 | `npm run db:reset` | Drop and recreate the schema with fresh seed data (**deletes all data**) |
 | `npm run db:gen-seed` | Regenerate `db/oracle/04_seed.sql` from the app's seed data |
 | `npm run db:down` | Stop the Oracle container (data is kept in a Docker volume) |
@@ -120,12 +145,13 @@ The scripts also run by hand in SQL Developer in order 01 → 04.
 ## Project layout
 
 ```
-db/oracle/        SQL scripts: schema, PL/SQL packages & triggers, views, seed, sample reports
+db/oracle/        SQL scripts: schema, PL/SQL packages & triggers, views, seed, sample reports, lab, warehouse (10–12)
 docs/DATABASE.md  ER diagram, normalization, constraints, PL/SQL API, roles & rights, Database Lab
 docs/DEMO.md      5-minute demonstration script
 server/           Node API: auth (scrypt + sessions), role checks, Oracle repository, live operations host
   db/oracle.ts    Oracle implementation (node-oracledb Thin mode — no Oracle client install needed)
   db/oracle-lab.ts Database Lab on Oracle: SQL control queue, Flashback, VPD report, concurrency runs
+  wms/            Smart Warehouse: engine (lots, bins, FEFO, slotting, sensors), Oracle SQL, embeddings
   db/memory.ts    Same rules in memory, for development/tests without a database
   db/selftest.ts  npm run db:selftest
 src/              Website: login, 3D scene, dashboard panels, Work panel (tasks, activity, team, reports, users)

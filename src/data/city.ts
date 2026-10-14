@@ -225,7 +225,7 @@ export const STORE_DEFS: StoreDef[] = [
   { id: 'ST-01', buildingId: 'PB-FRESHCART', name: 'FreshCart Supermarket', chain: 'FRESHCART', kind: 'SUPERMARKET', facilityId: 'WH-01',
     lines: [['CNT-P', 120, 45, 50, 64], ['BOX-M', 200, 70, 80, 150], ['PKG-TAPE', 240, 80, 90, 98], ['GLV-NIT', 160, 60, 60, 120]] },
   { id: 'ST-02', buildingId: 'PB-CITYCARE', name: 'CityCare Pharmacy', chain: 'CITYCARE', kind: 'PHARMACY', facilityId: 'WH-04',
-    lines: [['GLV-NIT', 180, 60, 70, 76], ['CNT-P', 60, 20, 18, 41]] },
+    lines: [['GLV-NIT', 180, 60, 70, 76], ['CNT-P', 60, 20, 18, 41], ['MED-INS', 120, 40, 22, 84]] },
   { id: 'ST-03', buildingId: 'PB-OFFICEWORKS', name: 'OfficeWorks Depot', chain: 'OFFICEWORKS', kind: 'OFFICE', facilityId: 'WH-02',
     lines: [['CHR-OFC', 24, 8, 6, 11], ['BOX-M', 150, 50, 45, 118], ['PKG-TAPE', 180, 60, 50, 66], ['LED-6060', 40, 14, 10, 30]] },
   { id: 'ST-04', buildingId: 'PB-VALUMART', name: 'ValuMart Superstore', chain: 'VALUMART', kind: 'SUPERMARKET', facilityId: 'WH-02',

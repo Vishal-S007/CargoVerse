@@ -103,6 +103,20 @@ security**: the four accounts side by side, with the `WHERE` clause Oracle adds.
 
 "These are real sessions against Oracle; the timeline shows the exact waits."
 
+### 6 · Smart Warehouse (2 minutes, optional)
+
+**Work → Warehouse.**
+
+1. **Overview → X-ray in 3D** for Southfield: the roof comes off; every pallet is a coloured box in its rack bin.
+2. **Slotting (ABC) → Apply ABC slotting**: "Analytic functions rank the products; the fast movers move next to the
+   docks — the expected walk per pick drops by about half." Switch the X-ray to *ABC class*.
+3. **Cold chain → Leave it open** on TS-04-C1. Within a minute the scheduler job's `MATCH_RECOGNIZE` finds three warm
+   readings in a row, puts the insulin lots **on hold** and raises an urgent task — a toast appears. "The database did
+   that on its own; the app only shows it."
+4. **Scan (GS1)** → click the *mistyped label*: refused by the check digit. Click an insulin label: on hold, cannot be picked.
+5. **Tamper-proof ledger**: *UPDATE … → ORA-05715*. "Not even the schema owner can change history."
+6. **Recall trace → Trace**: one recursive query from the lot to the stores that received it (ringed in red in 3D).
+
 ### Closing line
 
 "Four things a spreadsheet or a plain app can't do: other programs drive the system through the
@@ -116,4 +130,5 @@ keeps concurrent users correct."
 | The UPDATE does nothing in the city | Did you `COMMIT`? Is `npm run dev` running? |
 | `ORA-01017` for `cv_zoe` | Run `npm run db:lab` again; it creates the accounts through Docker |
 | Time machine says "in-memory history" | The database was reset less than a few minutes ago, or undo was overwritten; wait and retry |
+| Warehouse features show ✗ in *Overview* | Run `npm run db:lab` again; it needs Oracle 23ai (the Docker image) and the grants it applies through Docker |
 | `ORA-00942` for `trucks` as `cv_zoe` | Use `waretrack.trucks`, or run `npm run db:lab` to create the synonyms |

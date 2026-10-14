@@ -7,7 +7,7 @@ import { LAYOUTS } from './layouts';
 import { legRoadIn, legYardIn, legReverseIn, pathLength, ROAD_SPEED } from '../sim/paths';
 import { seedPort, seedRetail } from './city';
 
-export const WORLD_VERSION = 6;
+export const WORLD_VERSION = 7;
 export const SIM_START = hm('09:40');
 
 export function hm(s: string): number {
@@ -23,6 +23,7 @@ export const SKUS: Record<string, Sku> = {
   'LED-6060': { id: 'LED-6060', name: 'LED Panel 60×60', category: 'Lighting', unitsPerPallet: 40, kgPerPallet: 210, look: 'white', icon: 'panel' },
   'CHR-OFC': { id: 'CHR-OFC', name: 'Office Chair', category: 'Furniture', unitsPerPallet: 12, kgPerPallet: 160, look: 'cardboard', icon: 'chair' },
   'GLV-NIT': { id: 'GLV-NIT', name: 'Nitrile Gloves', category: 'PPE', unitsPerPallet: 200, kgPerPallet: 120, look: 'blue', icon: 'gloves' },
+  'MED-INS': { id: 'MED-INS', name: 'Insulin Pens (2–8 °C)', category: 'Pharma', unitsPerPallet: 480, kgPerPallet: 150, look: 'white', icon: 'medical' },
 };
 
 /** Short display name of a carrier ('WareTrack' is the database key of the company's own fleet, shown as CargoVerse). */
@@ -63,6 +64,7 @@ const FACILITIES: Facility[] = [
       { skuId: 'BOX-M', units: 860, lowBelow: 600 },
       { skuId: 'CNT-P', units: 410, lowBelow: 120 },
       { skuId: 'GLV-NIT', units: 2600, lowBelow: 800 },
+      { skuId: 'MED-INS', units: 2880, lowBelow: 960 },
     ],
   }),
   facility({

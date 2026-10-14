@@ -7,7 +7,8 @@ import { portLog } from '../src/sim/port';
 import { retailLog } from '../src/sim/retail';
 import { PARK_BUILDINGS } from '../src/data/park';
 import { AppError } from './db/repo';
-import { stepWorld, syncPoses, setSimSink, type SimOp } from '../src/sim/engine';
+import { stepWorld, syncPoses, setSimSink, setLotHooks, type SimOp } from '../src/sim/engine';
+import { WmsService } from './wms/service';
 import { SKUS } from '../src/data/seed';
 import type { Repo, StockOp, EventOp, GateOp, BoxOp, CallOp, PersistBatch } from './db/repo';
 
@@ -18,6 +19,8 @@ export class SimHost {
   control: SimControl = { paused: false, speed: 1 };
   operators: Record<string, number> = {};
   versions = { tasks: 1, audit: 1, world: 1, gate: 1, park: 1 };
+  /** Smart Warehouse: lots, bins, FEFO, slotting, cold chain, events (server/wms). */
+  readonly wms: WmsService;
 
   /** Database Lab: changes made outside the server and applied to the city (newest last). */
   readonly feed: SqlFeedItem[] = [];
@@ -43,7 +46,10 @@ export class SimHost {
   db: DbLiveStatus;
   readonly commits: DbCommit[] = [];
 
-  constructor(private repo: Repo, private persistEveryMs: number, private historyS = 600) {
+  constructor(private repo: Repo, private persistEveryMs: number, private historyS = 600, dataFile = '.data/memory-db.json') {
+    this.wms = new WmsService(repo, dataFile, repo.wmsDeps());
+    this.wms.bumpTasks = () => { this.bump('tasks'); this.bump('audit'); };
+    this.wms.onChange = () => { this.versions.world++; };
     this.db = {
       engine: repo.kind, commits: 0, failures: 0, rowsWritten: 0, lastCommitAt: null, lastCommitMs: 0, lastRows: 0,
       lastTables: {}, lastError: null, lastErrorAt: null,
@@ -84,6 +90,13 @@ export class SimHost {
     syncPoses(this.world);
     if (this.repo.kind === 'oracle') this.markAllSaved();
     setSimSink((op) => this.onOp(op));
+    // lots for pallets come from the warehouse module (one lot per inbound shipment, FEFO when picking)
+    setLotHooks({ receive: this.wms.engine.receiveLot, pick: this.wms.engine.pickLot });
+    try {
+      await this.wms.start(this.world);
+    } catch (e) {
+      console.error('[wms] could not start:', (e as Error).message);
+    }
     this.last = performance.now();
     this.tickTimer = setInterval(() => this.tick(), 50);
     this.flushTimer = setInterval(() => { void this.flush(); }, this.persistEveryMs);
@@ -99,7 +112,9 @@ export class SimHost {
     if (this.flushTimer) clearInterval(this.flushTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     setSimSink(null);
+    setLotHooks(null);
     await this.flush();
+    await this.wms.stop();
   }
 
   setControl(c: SimControl): void {
@@ -123,10 +138,12 @@ export class SimHost {
       stepWorld(this.world, step);
       remaining -= step;
     }
+    this.wms.tick();
     this.versions.world++;
   }
 
   private onOp(op: SimOp): void {
+    this.wms.onOp(op, this.world);
     if (op.k === 'stock') this.stock.push(op);
     else if (op.k === 'event') this.events.push(op);
     else if (op.k === 'gate') { this.gate.push(op); this.versions.gate++; }
@@ -248,6 +265,7 @@ export class SimHost {
         console.error('[persist] failed:', (err as Error).message);
         return;
       }
+      await this.wms.flush();
       this.frames.push(captureFrame(w));
       const keep = Math.ceil(this.historyS / (this.persistEveryMs / 1000)) + 3;
       if (this.frames.length > keep) this.frames.splice(0, this.frames.length - keep);
@@ -500,7 +518,7 @@ export class SimHost {
   // ---------------------------------------------------------------- live snapshots
   snapshot(facilities: FacilityId[]): string {
     const key = facilities.slice().sort().join(',');
-    const v = `${this.versions.world}:${this.db.commits}:${this.db.failures}`;
+    const v = `${this.versions.world}:${this.db.commits}:${this.db.failures}:${this.wms.version()}`;
     const hit = this.snapCache.get(key);
     if (hit && hit.v === v) return hit.json;
     const set = new Set<string>(facilities);
@@ -524,6 +542,7 @@ export class SimHost {
       versions: { tasks: this.versions.tasks, audit: this.versions.audit, gate: this.versions.gate, park: this.versions.park },
       db: this.db,
       lab: { feed: this.feed.slice(-8) },
+      wms: { v: this.wms.version(), events: this.wms.recentEvents(6) },
     };
     const json = JSON.stringify(out);
     this.snapCache.set(key, { v, json });

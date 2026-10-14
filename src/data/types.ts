@@ -16,7 +16,7 @@ export interface Vec2 {
 }
 
 export type PalletLook = 'cardboard' | 'blue' | 'white';
-export type SkuIcon = 'box' | 'container' | 'helmet' | 'tape' | 'panel' | 'chair' | 'gloves';
+export type SkuIcon = 'box' | 'container' | 'helmet' | 'tape' | 'panel' | 'chair' | 'gloves' | 'medical';
 
 export interface Sku {
   id: string;

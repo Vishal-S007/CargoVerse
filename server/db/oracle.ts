@@ -1000,6 +1000,7 @@ export class OracleRepo implements Repo {
   }
 
   // ---------------------------------------------------------------- Database Lab (oracle-lab.ts)
+  wmsDeps() { return { oracledb: this.oracledb, tx: <T>(u: number | null, fn: (c: Conn) => Promise<T>, src?: SqlSource) => this.tx(u, fn, src) }; }
   labInfo() { return this.lab.info(); }
   pollCommands(): Promise<ExternalCommand[]> { return this.lab.poll(); }
   ackCommands(results: { id: number; status: 'APPLIED' | 'REJECTED'; message: string }[]): Promise<void> { return this.lab.ack(results); }

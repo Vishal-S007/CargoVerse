@@ -17,7 +17,9 @@
     "db:lab": "node scripts/build-server.mjs && node server-dist/setup.mjs --lab",
     "db:selftest": "node scripts/build-server.mjs && node server-dist/selftest.mjs",
     "db:gen-seed": "node scripts/build-server.mjs && node server-dist/gen-seed.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:wms": "node scripts/build-server.mjs && node server-dist/setup.mjs --lab",
+    "ai:model": "npm install --no-save @huggingface/transformers@3.8.1"
   },
   "dependencies": {
     "@react-three/fiber": "8.17.10",

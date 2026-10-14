@@ -14,6 +14,8 @@ import { placeOrder, hasOpenOrder, chooseSupplier } from '../src/sim/retail';
 import { portLog } from '../src/sim/port';
 import { computeAlerts, taskFromAlert, runAssistant, assistantConfigured, type ChatTurn } from './agent';
 import type { LabScenario, LabStatus } from '../src/api/types';
+import { SKUS } from '../src/data/seed';
+import { WMS_FACILITIES } from '../src/data/wms';
 
 const FACILITIES: FacilityId[] = ['WH-01', 'WH-02', 'WH-04'];
 const TASK_TYPES: TaskType[] = ['UNLOAD', 'LOAD', 'PUTAWAY', 'CYCLE_COUNT', 'MAINTENANCE', 'DOCK_CHECK', 'OTHER'];
@@ -450,6 +452,95 @@ export function buildRouter(repo: Repo, host: SimHost, opts: Opts): Router {
     const scenario = oneOf<LabScenario>(ctx.body?.scenario, 'scenario', ['double_booking', 'lost_update', 'safe_update', 'deadlock']);
     return repo.runLab(ctx.user!.userId, scenario);
   }, { perm: 'VIEW_DATABASE' });
+
+  // ------------------------------------------------------------ Smart Warehouse (server/wms)
+  const W = host.wms;
+  const wmsSites = (ctx: Ctx): FacilityId[] => facilityScope(ctx.user!, ctx.query.get('facility')).filter((f) => WMS_FACILITIES.includes(f));
+  const oneSite = (ctx: Ctx, v: unknown): FacilityId => {
+    const f = oneOf<FacilityId>(v, 'facility', FACILITIES);
+    if (!ctx.user!.facilities.includes(f)) throw new AppError(403, `You do not have access to ${f}`);
+    return f;
+  };
+  const lotSite = (ctx: Ctx, lotId: string): FacilityId => {
+    const lot = W.engine.lots.get(lotId);
+    if (!lot) throw new AppError(404, `Lot ${lotId} not found`);
+    if (!ctx.user!.facilities.includes(lot.facilityId)) throw new AppError(403, `You do not have access to ${lot.facilityId}`);
+    return lot.facilityId;
+  };
+  router.add('GET', '/api/wms/overview', (ctx) => W.overview(wmsSites(ctx)));
+  router.add('GET', '/api/wms/bins/:facility', (ctx) => W.binMap(oneSite(ctx, ctx.params.facility)));
+  router.add('GET', '/api/wms/abc/:facility', (ctx) => W.abc(oneSite(ctx, ctx.params.facility)), { perm: 'VIEW_REPORTS' });
+  router.add('POST', '/api/wms/reslot', async (ctx) => W.reslot(oneSite(ctx, ctx.body?.facility), ctx.user!.userId), { perm: 'MANAGE_TASKS' });
+  router.add('GET', '/api/wms/lots', (ctx) => W.lots(wmsSites(ctx)));
+  router.add('GET', '/api/wms/trace', async (ctx) => {
+    const kind = oneOf(ctx.query.get('kind'), 'kind', ['VESSEL', 'CONTAINER', 'SHIPMENT', 'LOT', 'ORDER', 'STORE', 'CUSTOMER']);
+    const id = str(ctx.query.get('id'), 'id', { max: 60 });
+    const dir = oneOf<'down' | 'up'>(ctx.query.get('dir') ?? 'down', 'dir', ['down', 'up']);
+    if (kind === 'LOT') lotSite(ctx, id);
+    return W.trace(kind, id, dir);
+  }, { perm: 'VIEW_REPORTS' });
+  router.add('POST', '/api/wms/recall', async (ctx) => {
+    const lotId = str(ctx.body?.lotId, 'lotId', { max: 20 });
+    lotSite(ctx, lotId);
+    const r = await W.recall(lotId, str(ctx.body?.reason, 'Reason', { max: 180 }), ctx.user!.userId);
+    host.bump('tasks'); host.bump('audit');
+    return r;
+  }, { perm: 'MANAGE_TASKS' });
+  router.add('POST', '/api/wms/release', async (ctx) => {
+    const lotId = str(ctx.body?.lotId, 'lotId', { max: 20 });
+    lotSite(ctx, lotId);
+    await W.release(lotId, ctx.user!.userId);
+    host.bump('audit');
+    return { ok: true };
+  }, { perm: 'MANAGE_TASKS' });
+  router.add('GET', '/api/wms/cold', (ctx) => W.cold(wmsSites(ctx)));
+  router.add('POST', '/api/wms/door', async (ctx) => {
+    const id = str(ctx.body?.sensorId, 'sensorId', { max: 12 });
+    const s = W.engine.sensors.get(id);
+    if (!s) throw new AppError(404, `No sensor ${id}`);
+    if (!ctx.user!.facilities.includes(s.def.facilityId)) throw new AppError(403, `You do not have access to ${s.def.facilityId}`);
+    await W.door(id, ctx.body?.open === true, int(ctx.body?.seconds ?? 0, 'seconds', { min: 0, max: 300 })!, ctx.user!.userId);
+    return { ok: true };
+  }, { perm: 'MANAGE_TASKS' });
+  router.add('GET', '/api/wms/ledger', () => W.ledger(), { perm: 'VIEW_REPORTS' });
+  router.add('GET', '/api/wms/forecast', (ctx) => {
+    const fac = oneSite(ctx, ctx.query.get('facility'));
+    const sku = str(ctx.query.get('sku'), 'sku', { max: 20 });
+    if (!SKUS[sku]) throw new AppError(404, `Unknown product ${sku}`);
+    return W.forecast(fac, sku);
+  }, { perm: 'VIEW_REPORTS' });
+  router.add('GET', '/api/wms/replenishment', (ctx) => W.replenishment(wmsSites(ctx)), { perm: 'VIEW_REPORTS' });
+  router.add('POST', '/api/wms/reorder', async (ctx) => ({ raised: await W.raiseReorders(ctx.body?.facility ? [oneSite(ctx, ctx.body.facility)] : ctx.user!.facilities, ctx.user!.userId) }), { perm: 'MANAGE_TASKS' });
+  router.add('POST', '/api/wms/scan', async (ctx) => {
+    const r = await W.scan(str(ctx.body?.code, 'Code', { max: 60 }), ctx.user!.userId);
+    if (r.facilityId && !ctx.user!.facilities.includes(r.facilityId as FacilityId)) {
+      return { valid: r.valid, code: r.code, sscc: r.sscc, where: null, result: `This pallet belongs to ${r.facilityId}, which you do not have access to`, source: r.source };
+    }
+    return r;
+  });
+  router.add('POST', '/api/wms/pick', async (ctx) => {
+    const sscc = str(ctx.body?.sscc, 'SSCC', { max: 18 });
+    const st = [...W.engine.bins.values()].find((b) => b.sscc === sscc);
+    if (st) lotSite(ctx, st.lotId);
+    const r = W.manualPick(sscc, ctx.user!.userId);
+    host.bump('audit');
+    return r;
+  }, { perm: 'UPDATE_OWN_TASKS' });
+  router.add('GET', '/api/wms/labels', (ctx) => ({ labels: W.labels(wmsSites(ctx)), invalid: W.badLabel() }));
+  router.add('GET', '/api/wms/route', async (ctx) => {
+    const fac = oneSite(ctx, ctx.query.get('facility'));
+    const bins = (ctx.query.get('bins') ?? '').split(',').map((b) => b.trim()).filter(Boolean).slice(0, 12);
+    return W.route(fac, ctx.query.get('dock'), bins);
+  });
+  router.add('GET', '/api/wms/search', (ctx) => W.search(str(ctx.query.get('q'), 'Search text', { max: 200 })));
+  router.add('POST', '/api/wms/damage', async (ctx) => {
+    const fac = oneSite(ctx, ctx.body?.facilityId);
+    const id = await W.addDamage({
+      facilityId: fac, skuId: str(ctx.body?.skuId, 'Product', { max: 20 }), severity: oneOf(ctx.body?.severity ?? 'MEDIUM', 'severity', ['LOW', 'MEDIUM', 'HIGH']),
+      text: str(ctx.body?.text, 'Description', { max: 480 }), sscc: ctx.body?.sscc ? str(ctx.body.sscc, 'SSCC', { max: 18 }) : null, lotId: ctx.body?.lotId ? str(ctx.body.lotId, 'Lot', { max: 20 }) : null,
+    }, ctx.user!.userId, ctx.user!.fullName);
+    return { id };
+  }, { perm: 'UPDATE_OWN_TASKS' });
 
   // ------------------------------------------------------------ AI agents: exception watcher + assistant
   router.add('GET', '/api/alerts', async (ctx) => computeAlerts(host.world, repo, facilityScope(ctx.user!, ctx.query.get('facility'))), { perm: 'VIEW_TEAM' });

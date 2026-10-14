@@ -9,6 +9,10 @@ import type {
   LabStatus, SqlFeedItem, ExternalSqlResult, RowHistory, VpdReport, LabRun, LabScenario,
 } from './types';
 import type { Vessel, Berth, StoreOrder } from '../data/types';
+import type {
+  WmsOverview, BinMap, AbcReport, ReslotResult, LotsReport, TraceReport, ColdReport, LedgerReport, ForecastReport, ReplenishReport,
+  ScanResult, PalletLabel, RouteReport, SearchReport, DamageInput,
+} from './wms-types';
 import type { ParkBuilding } from '../data/park';
 
 const TOKEN_KEY = 'waretrack.token';
@@ -115,6 +119,28 @@ export const api = {
   labHistory: (kind: string, id: string, window?: number) => call<RowHistory>('GET', `/lab/history/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${qs({ window })}`),
   labVpd: () => call<VpdReport>('GET', '/lab/vpd'),
   labRun: (scenario: LabScenario) => call<LabRun>('POST', '/lab/concurrency', { scenario }),
+
+  // Smart Warehouse
+  wmsOverview: () => call<WmsOverview>('GET', '/wms/overview'),
+  wmsBins: (facility: FacilityId) => call<BinMap>('GET', `/wms/bins/${facility}`),
+  wmsAbc: (facility: FacilityId) => call<AbcReport>('GET', `/wms/abc/${facility}`),
+  wmsReslot: (facility: FacilityId) => call<ReslotResult>('POST', '/wms/reslot', { facility }),
+  wmsLots: () => call<LotsReport>('GET', '/wms/lots'),
+  wmsTrace: (kind: string, id: string, dir: 'down' | 'up') => call<TraceReport>('GET', `/wms/trace${qs({ kind, id, dir })}`),
+  wmsRecall: (lotId: string, reason: string) => call<{ stores: number }>('POST', '/wms/recall', { lotId, reason }),
+  wmsRelease: (lotId: string) => call<{ ok: boolean }>('POST', '/wms/release', { lotId }),
+  wmsCold: () => call<ColdReport>('GET', '/wms/cold'),
+  wmsDoor: (sensorId: string, open: boolean, seconds = 0) => call<{ ok: boolean }>('POST', '/wms/door', { sensorId, open, seconds }),
+  wmsLedger: () => call<LedgerReport>('GET', '/wms/ledger'),
+  wmsForecast: (facility: FacilityId, sku: string) => call<ForecastReport>('GET', `/wms/forecast${qs({ facility, sku })}`),
+  wmsReplenishment: () => call<ReplenishReport>('GET', '/wms/replenishment'),
+  wmsReorder: (facility?: FacilityId) => call<{ raised: number }>('POST', '/wms/reorder', { facility }),
+  wmsScan: (code: string) => call<ScanResult>('POST', '/wms/scan', { code }),
+  wmsPick: (sscc: string) => call<{ ok: boolean; message: string; fefoOk: boolean | null }>('POST', '/wms/pick', { sscc }),
+  wmsLabels: () => call<{ labels: PalletLabel[]; invalid: string }>('GET', '/wms/labels'),
+  wmsRoute: (facility: FacilityId, dock?: string, bins?: string[]) => call<RouteReport>('GET', `/wms/route${qs({ facility, dock, bins: bins?.join(',') })}`),
+  wmsSearch: (q: string) => call<SearchReport>('GET', `/wms/search${qs({ q })}`),
+  wmsDamage: (d: DamageInput) => call<{ id: number }>('POST', '/wms/damage', d),
 
   alerts: (facility?: FacilityId) => call<Alert[]>('GET', `/alerts${qs({ facility })}`),
   alertTask: (alertId: string, assigneeId?: number) => call<Task>('POST', '/alerts/task', { alertId, assigneeId }),

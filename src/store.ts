@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import type { WorldState, FacilityId, EntityRef } from './data/types';
 import type { SessionUser, SimControl, DbLiveStatus, SqlFeedItem } from './api/types';
+import type { WmsEvent } from './api/wms-types';
 import { applyFrame, type TimeFrame } from './data/timeframe';
 import { dataSource } from './data/adapter';
 import { createSeedWorld } from './data/seed';
@@ -17,10 +18,21 @@ import { findBuilding, findVehicle, setPark, syncParkClock } from './data/parkCl
 import { PARK_GATES, type GateCode } from './data/park';
 
 export type FleetTab = 'docks' | 'forklifts' | 'trucks';
-export type WorkTab = 'tasks' | 'alerts' | 'assistant' | 'activity' | 'team' | 'users' | 'reports' | 'trade' | 'port' | 'park' | 'database' | 'lab';
+export type WorkTab = 'tasks' | 'alerts' | 'assistant' | 'activity' | 'team' | 'users' | 'reports' | 'trade' | 'port' | 'park' | 'database' | 'lab' | 'wms';
+/** How the X-ray view colours the bins inside a building. */
+export type XrayMode = 'sku' | 'abc' | 'expiry' | 'qc';
+export interface Xray {
+  facility: FacilityId | null;  // the building shown with its roof off (null = none)
+  mode: XrayMode;
+  route: { facility: FacilityId; path: { x: number; z: number }[]; stops: string[] } | null;
+  highlight: string[];          // bins to point out (scan result, route stops)
+  recallStores: string[];       // stores that received a recalled lot (red rings in town)
+  hover?: string | null;        // bin under the pointer
+}
 export type CameraCommand =
   | { kind: 'zoomIn' | 'zoomOut' | 'rotateLeft' | 'rotateRight' | 'home' | 'overview' }
-  | { kind: 'focus'; ref: EntityRef };
+  | { kind: 'focus'; ref: EntityRef }
+  | { kind: 'xray'; facility: FacilityId };
 
 let world: WorldState = createSeedWorld();
 syncPoses(world);
@@ -52,6 +64,11 @@ interface AppState {
   followSql: boolean;
   setFollowSql: (v: boolean) => void;
   timeTravel: TimeTravel;
+  /** Smart Warehouse: X-ray overlay and the event stream (from the server's live snapshot). */
+  xray: Xray;
+  setXray: (patch: Partial<Xray>) => void;
+  wmsVersion: number;
+  wmsEvents: WmsEvent[];
   openTimeMachine: (open: boolean) => void;
   travelTo: (ago: number | null) => Promise<void>;
   setPlaying: (playing: boolean) => void;
@@ -105,6 +122,10 @@ export const useApp = create<AppState>((set, get) => ({
   followSql: true,
   setFollowSql: (v) => set({ followSql: v }),
   timeTravel: { open: false, ago: null, frame: null, loading: false, error: null, playing: false },
+  xray: { facility: null, mode: 'sku', route: null, highlight: [], recallStores: [] },
+  setXray: (patch) => set({ xray: { ...get().xray, ...patch } }),
+  wmsVersion: 0,
+  wmsEvents: [],
   openTimeMachine: (open) => {
     if (!open) void get().travelTo(null);
     set({ timeTravel: { ...get().timeTravel, open, playing: false } });
@@ -290,6 +311,7 @@ export function startLive(user: SessionUser, db: 'oracle' | 'memory'): Promise<(
         const d = JSON.parse((ev as MessageEvent<string>).data) as {
           world: WorldState; control: SimControl; versions: { tasks: number; audit: number; gate: number; park?: number }; db?: DbLiveStatus;
           lab?: { feed: SqlFeedItem[] };
+          wms?: { v: number; events: WmsEvent[] };
         };
         liveWorld = d.world;
         const s = useApp.getState();
@@ -299,6 +321,12 @@ export function startLive(user: SessionUser, db: 'oracle' | 'memory'): Promise<(
           syncParkClock(world.realTime, d.control.paused, d.control.speed);
         }
         const patch: Partial<AppState> = { control: d.control, versions: d.versions, connection: 'live', tick: s.tick + 1, dbLive: d.db ?? null };
+        if (d.wms && d.wms.v !== s.wmsVersion) {
+          patch.wmsVersion = d.wms.v;
+          const known = new Set(s.wmsEvents.map((e) => e.id));
+          const fresh = d.wms.events.filter((e) => !known.has(e.id));
+          if (fresh.length || first) patch.wmsEvents = [...s.wmsEvents, ...fresh].slice(-30);
+        }
         // a building changed in the database (e.g. from SQL Developer): reload the park records
         if (d.versions.park !== undefined && s.versions.park !== undefined && d.versions.park !== s.versions.park) {
           void api.park().then((p) => { setPark(p); useApp.setState({ parkVersion: useApp.getState().parkVersion + 1 }); }).catch(() => undefined);

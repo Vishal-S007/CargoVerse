@@ -122,7 +122,10 @@ BEGIN
              WHERE column_name = 'FACILITY_ID'
                AND table_name IN ('FACILITIES', 'DOCKS', 'CHARGERS', 'INVENTORY', 'PALLETS', 'TRUCKS', 'SHIPMENTS',
                                   'FORKLIFTS', 'STOCK_MOVEMENTS', 'TASKS', 'OPERATION_EVENTS', 'PARK_GATE_LOG',
-                                  'EMPLOYEES', 'STORE_ORDERS', 'DELIVERY_VANS')) LOOP
+                                  'EMPLOYEES', 'STORE_ORDERS', 'DELIVERY_VANS',
+                                  -- Smart Warehouse (10_wms.sql)
+                                  'LOTS', 'STORAGE_BINS', 'LOT_MOVES', 'SENSORS', 'COLD_BREACHES', 'DAMAGE_REPORTS',
+                                  'SKU_DAILY_DEMAND', 'SCAN_LOG', 'WH_NODES', 'WH_EDGES', 'WMS_EVENTS', 'WMS_SETTINGS')) LOOP
     DBMS_RLS.ADD_POLICY(
       object_schema   => USER,
       object_name     => t.table_name,

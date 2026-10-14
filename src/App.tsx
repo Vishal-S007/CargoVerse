@@ -8,6 +8,7 @@ import { LoginPage } from './ui/Login';
 import { Workspace, Toast } from './ui/Workspace';
 import { MapLegend } from './ui/ParkPanels';
 import { TimeBar, SqlToasts } from './ui/Lab';
+import { WmsToasts, XrayLegend } from './ui/Wms';
 
 class SceneBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -119,8 +120,10 @@ export default function App() {
               <FleetList />
             </>
           ) : <>{timeOpen && <TimeBar />}<MapLegend /></>}
+          <XrayLegend />
           <Workspace />
           <SqlToasts />
+          <WmsToasts />
         </>
       )}
       {mode === 'offline' && <div className="offline-banner">Offline demo — no server connection, nothing is saved to the database</div>}

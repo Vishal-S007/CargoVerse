@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   X, Plus, RefreshCw, ChevronDown, ChevronRight, Crosshair, Play, Pause, CheckCircle2, Ban, UserRound, History,
-  ClipboardList, Users, BarChart3, ShieldCheck, Truck as TruckIcon, Clock3, AlertTriangle, KeyRound, Sparkles, ArrowDownUp, Building2, Database, Anchor, FlaskConical,
+  ClipboardList, Users, BarChart3, ShieldCheck, Truck as TruckIcon, Clock3, AlertTriangle, KeyRound, Sparkles, ArrowDownUp, Building2, Database, Anchor, FlaskConical, Warehouse,
 } from 'lucide-react';
 import { AlertsTab, AssistantTab } from './Agents';
 import { TradeTab, ParkTab, DatabaseTab } from './DataTabs';
 import { PortTab } from './PortTab';
 import { DbLabTab } from './Lab';
+import { WmsTab } from './Wms';
 import { carrierName } from '../data/seed';
 import type { FacilityId, EntityRef } from '../data/types';
 import type {
@@ -31,6 +32,7 @@ const ACTION_LABEL: Record<string, string> = {
   USER_DELETED: 'Deleted user', ACCESS_GRANTED: 'Granted access', ACCESS_REVOKED: 'Revoked access', EMPLOYEE_ADDED: 'Added employee',
   EMPLOYEE_UPDATED: 'Updated employee', OPS_PAUSED: 'Paused operations', OPS_RESUMED: 'Resumed operations', OPS_SPEED: 'Changed speed',
   BUILDING_UPDATED: 'Updated building', SQL_QUERY: 'Ran SQL query', SQL_DML: 'Changed data with SQL',
+  LOT_RECALLED: 'Recalled a lot', LOT_RELEASED: 'Released a lot', SENSOR_DOOR: 'Cold room door',
 };
 
 const AUTO_NOTES = new Set(['Task created', 'Created automatically by operations']);
@@ -91,6 +93,7 @@ export function Workspace() {
   const has = (p: string) => user.permissions.includes(p as never);
   const tabs: { id: WorkTab; label: string; icon: JSX.Element; show: boolean }[] = [
     { id: 'tasks', label: has('MANAGE_TASKS') ? 'Tasks' : 'My tasks', icon: <ClipboardList size={15} />, show: true },
+    { id: 'wms', label: 'Warehouse', icon: <Warehouse size={15} />, show: true },
     { id: 'alerts', label: 'Alerts', icon: <AlertTriangle size={15} />, show: has('VIEW_TEAM') },
     { id: 'assistant', label: 'Assistant', icon: <Sparkles size={15} />, show: true },
     { id: 'activity', label: 'Activity', icon: <History size={15} />, show: has('VIEW_AUDIT') },
@@ -106,7 +109,7 @@ export function Workspace() {
   const visible = tabs.filter((t) => t.show);
   const current = visible.some((t) => t.id === tab) ? tab : 'tasks';
   return (
-    <aside className={`work ${current === 'database' || current === 'lab' || current === 'trade' || current === 'park' || current === 'port' ? 'wide' : ''}`} role="dialog" aria-label="Work and activity">
+    <aside className={`work ${current === 'database' || current === 'lab' || current === 'wms' || current === 'trade' || current === 'park' || current === 'port' ? 'wide' : ''}`} role="dialog" aria-label="Work and activity">
       <div className="work-head">
         <div>
           <div className="work-title">{user.role === 'OPERATOR' ? 'My work' : user.role === 'ADMIN' ? 'Administration' : 'Operations management'}</div>
@@ -133,6 +136,7 @@ export function Workspace() {
         {current === 'park' && <ParkTab />}
         {current === 'port' && <PortTab />}
         {current === 'database' && <DatabaseTab />}
+        {current === 'wms' && <WmsTab />}
         {current === 'lab' && <DbLabTab />}
       </div>
     </aside>

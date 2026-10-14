@@ -17,6 +17,9 @@ and 23ai (including the free editions).
 | `07_security_sys.sql` | Run as `SYS` (done automatically): `EXECUTE` on `DBMS_RLS` and the demo accounts `CV_ADMIN`, `CV_ALEX`, `CV_MEERA`, `CV_ZOE` |
 | `08_security.sql` | `DB_ACCOUNTS`, package `WT_SECURITY` and the `CV_SITE_ROWS` VPD policy on 15 tables |
 | `09_security_sys.sql` | Run as `SYS`: synonyms so the demo accounts can write `trucks` instead of `waretrack.trucks` |
+| `10_wms.sql` | Smart Warehouse: bins, aisle graph, lots, bin contents, the lot ledger, sensors, breaches, scans, damage reports, events; packages `WT_WMS` and `WT_EVENTS`; 9 views |
+| `11_wms_seed.sql` | Generated: racks and bins of each building, the aisle graph, product handling rules, sensors, 90 days of demand, damage reports |
+| `12_wms_optional.sql` | Oracle 21c/23ai upgrades, each skipped if unavailable: interval partitioning, blockchain table, VECTOR columns, Transactional Event Queue, scheduler jobs, property graph |
 | `99_drop_all.sql` | Removes every CargoVerse object |
 
 ## Entity–relationship diagram
@@ -277,6 +280,46 @@ Each experiment opens two sessions and runs them against each other on sandbox t
 | Lost update | Anomaly — one sale disappears | Both sessions read, then write `units = :value` |
 | The fix | Protected — both sales counted | `SELECT … FOR UPDATE` makes the second session wait for the first |
 | Deadlock | Detected — `ORA-00060` | A locks LAB-A, B locks LAB-B, each then needs the other; Oracle rolls back one statement |
+
+## Smart Warehouse
+
+Inventory by **lot** and **bin** on top of the core schema. Each building has racks (aisles A, B, …; bays;
+left/right; three levels) in `STORAGE_BINS`, joined by an aisle network `WH_NODES` / `WH_EDGES` (a graph); each
+bin knows its walking distance to the nearest dock door. `LOTS` hold one product received together (one lot per
+inbound shipment), with an expiry date and a quality status; `BIN_STOCK` says which pallet (GS1 SSCC) of which lot
+is in each bin. Every change is a row in `LOT_MOVES`; its trigger updates the lot balance, the day's demand in
+`SKU_DAILY_DEMAND` and copies the row into `STOCK_LEDGER`.
+
+```
+VESSELS ─▶ CONTAINER_MOVES ─▶ SHIPMENTS (in) ─▶ LOTS ─▶ LOT_MOVES ─▶ SHIPMENTS (out) / STORE_ORDERS ─▶ STORES
+                                                  │         │
+                                     BIN_STOCK ◀──┘         └─▶ STOCK_LEDGER (blockchain) · SKU_DAILY_DEMAND
+                                        │
+                                  STORAGE_BINS ─▶ WH_NODES ◀─ WH_EDGES        SENSORS ─▶ SENSOR_READINGS ─▶ COLD_BREACHES
+```
+
+| Feature | Objects | SQL / PL/SQL technique |
+| --- | --- | --- |
+| ABC slotting | `V_SKU_ABC`, `V_BIN_CONTENTS`, `WMS_SETTINGS` | `RATIO_TO_REPORT`, running `SUM() OVER (ORDER BY … ROWS UNBOUNDED PRECEDING)`, `ROW_NUMBER` |
+| FEFO picking and audit | `WT_WMS.FEFO_LOT`, `V_LOT_STOCK`, `V_FEFO_VIOLATIONS` | `RANK() OVER (PARTITION BY … ORDER BY expiry_date)`; violations re-compute each lot's balance from the ledger at the moment of the pick |
+| Recall trace | `V_TRACE_LINKS`, `WT_WMS.RECALL_LOT` | Recursive `WITH` with `SEARCH DEPTH FIRST` and `CYCLE`; the recall quarantines, creates tasks per store, audits and publishes an event in one transaction |
+| Cold chain | `SENSOR_READINGS` (interval-partitioned by day), `COLD_BREACHES`, `WT_WMS.DETECT_BREACHES`, job `CV_DETECT_BREACHES` | `MATCH_RECOGNIZE … PATTERN (out_of_range{3,})`; holds only lots whose product range the temperature left; old days dropped with `ALTER TABLE … DROP PARTITION` |
+| Tamper-proof ledger | `STOCK_LEDGER` | `CREATE BLOCKCHAIN TABLE … NO DELETE UNTIL 16 DAYS AFTER INSERT HASHING USING "SHA2_512"`; `DBMS_BLOCKCHAIN_TABLE.VERIFY_ROWS` |
+| Forecast and reorder | `V_DEMAND_FORECAST`, `V_REPLENISHMENT` | `MODEL … RULES (trend[ANY] = intercept[CV()] + slope[CV()] * CV(day_no))`, `REGR_SLOPE`, `STDDEV`; reorder point and EOQ |
+| GS1 scanning | `BIN_STOCK.ck_bs_sscc`, `WT_WMS.SCAN`, `SCAN_LOG` | The mod-10 check digit of an 18-digit SSCC written as a `CHECK` constraint |
+| Event stream | `WT_EVENTS`, `WMS_EVENTS`, queue `CV_EVENTS` | `DBMS_AQ.ENQUEUE` inside the caller's transaction (delivered only on commit); the server dequeues with `DBMS_AQ.DEQUEUE` |
+| Pick route | `WT_WMS.SHORTEST_PATH`, `CV_WAREHOUSE_GRAPH` | Dijkstra in PL/SQL with associative arrays; `GRAPH_TABLE (… MATCH (d)-[e IS aisle]-{1,6}(n))` |
+| Semantic search | `DAMAGE_REPORTS.EMBEDDING`, `SKU_HANDLING.EMBEDDING` | `VECTOR(384, FLOAT32)`, `VECTOR_DISTANCE(…, COSINE)` |
+
+Try it in SQL Developer:
+
+```sql
+SELECT * FROM v_sku_abc ORDER BY facility_id, velocity_rank;          -- ABC classes
+SELECT wt_wms.fefo_lot('WH-04', 'MED-INS') FROM dual;                 -- the lot to pick next
+UPDATE sensors SET door_open = 'Y' WHERE sensor_id = 'TS-04-C1'; COMMIT;   -- watch the breach in the app
+UPDATE stock_ledger SET units = 0;                                    -- ORA-05715: refused
+SELECT wt_wms.shortest_path('WH-04-I1', 'WH-04-O10') FROM dual;       -- Dijkstra in PL/SQL
+```
 
 ## Design notes
 
