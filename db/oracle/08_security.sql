@@ -97,15 +97,24 @@ END wt_security;
 /
 
 -- ============================================================================
--- Read access for the demonstration accounts (password hashes and sessions excluded)
+-- Read access for the demonstration accounts (password hashes and sessions excluded).
+-- Each grant on its own: Oracle's internal tables (queue tables, AQ$ views) cannot be
+-- granted, and one refusal must not leave the accounts with no access at all.
 -- ============================================================================
 BEGIN
   FOR u IN (SELECT username FROM all_users WHERE username IN ('CV_ADMIN', 'CV_ALEX', 'CV_MEERA', 'CV_ZOE')) LOOP
     FOR o IN (SELECT object_name FROM user_objects
                WHERE object_type IN ('TABLE', 'VIEW')
                  AND object_name NOT IN ('APP_USERS', 'USER_SESSIONS', 'DB_ACCOUNTS')
-                 AND object_name NOT LIKE 'BIN$%') LOOP
-      EXECUTE IMMEDIATE 'GRANT SELECT ON ' || o.object_name || ' TO ' || u.username;
+                 AND object_name NOT LIKE 'BIN$%'
+                 AND object_name NOT LIKE 'AQ$%'
+                 AND object_name NOT LIKE 'SYS\_%' ESCAPE '\'
+                 AND object_name NOT LIKE 'DR$%') LOOP
+      BEGIN
+        EXECUTE IMMEDIATE 'GRANT SELECT ON "' || o.object_name || '" TO ' || u.username;
+      EXCEPTION
+        WHEN OTHERS THEN NULL;  -- not grantable (an internal object): skip it
+      END;
     END LOOP;
   END LOOP;
 END;

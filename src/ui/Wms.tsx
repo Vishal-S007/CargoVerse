@@ -756,7 +756,7 @@ function RouteView() {
           </ol>
           {data.graph && (
             <div className={`graphq ${data.graph.ok ? '' : 'bad'}`}>
-              <b>SQL/PGQ:</b> {data.graph.ok ? `${data.graph.rows} aisle points within 6 segments of ${data.dock} (GRAPH_TABLE … MATCH (d)-[e]-{1,6}(n))` : `GRAPH_TABLE query failed: ${data.graph.error}`}
+              <b>SQL/PGQ:</b> {data.graph.ok ? `${data.graph.rows} aisle points within 6 segments of ${data.dock} (GRAPH_TABLE … MATCH (d)-[e]->{1,6}(n))` : `GRAPH_TABLE query failed: ${data.graph.error}`}
               <SqlBox sql={data.graph.sql} label="Show the graph query" />
             </div>
           )}

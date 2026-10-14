@@ -128,13 +128,25 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------------------
   console.log('\n2 · Time travel (Flashback)');
+  // Flashback cannot look back past the last DDL on a table (ORA-01466). Right after npm run db:setup or
+  // db:lab (which re-grants access) there is no history yet, so wait until the tables are 30 s old.
+  const FLASHBACK_TABLES = ['TRUCKS', 'FORKLIFTS', 'PALLETS', 'DOCKS', 'VESSELS', 'PORT_BERTHS', 'QUAY_CRANES', 'YARD_CONTAINERS',
+    'STORE_ORDERS', 'STORE_STOCK', 'DELIVERY_VANS', 'SIM_STATE'];
+  const tableAge = async () => Number((await one(`SELECT NVL(ROUND((SYSDATE - MAX(last_ddl_time)) * 86400), 99999) AS s FROM user_objects
+     WHERE object_type = 'TABLE' AND object_name IN (${FLASHBACK_TABLES.map((t) => `'${t}'`).join(', ')})`))?.S ?? 99999);
+  const age0 = await tableAge();
+  if (age0 < 30) {
+    console.log(`  (the tables were created or re-granted ${age0} s ago; waiting ${30 - age0} s so there is history to rewind)`);
+    await new Promise((r) => setTimeout(r, (30 - age0) * 1000));
+  }
+  const historyS = Math.max(10, Math.min(300, (await tableAge()) - 10));
   await check('Flashback Query (AS OF TIMESTAMP)', async () => {
-    const r = await one(`SELECT COUNT(*) AS n FROM trucks AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '20' SECOND)`);
-    return `${r!.N} trucks 20 s ago`;
+    const r = await one(`SELECT COUNT(*) AS n FROM trucks AS OF TIMESTAMP (SYSTIMESTAMP - INTERVAL '15' SECOND)`);
+    return `${r!.N} trucks 15 s ago`;
   });
   await check('the time machine reads a whole frame from the past', async () => {
     const sites = (await q('SELECT facility_id FROM facilities')).map((r: any) => r.FACILITY_ID as FacilityId);
-    const f = await repo.flashback(30, sites);
+    const f = await repo.flashback(15, sites);
     assert(f.source === 'flashback', `fell back to ${f.source}: ${f.note ?? ''}`);
     const n = Object.values(f.rows).reduce((a, b) => a + b, 0);
     assert(n > 0, 'no rows read');
@@ -143,9 +155,9 @@ async function main(): Promise<void> {
   await check('Flashback Versions Query (row history)', async () => {
     const v = await one(`SELECT vessel_id FROM vessels ORDER BY vessel_id FETCH FIRST 1 ROW ONLY`);
     assert(v, 'no vessels');
-    const h = await repo.rowHistory('vessel', v.VESSEL_ID, 300);
+    const h = await repo.rowHistory('vessel', v.VESSEL_ID, historyS);
     assert(h.source === 'flashback', `fell back to ${h.source}: ${h.note ?? ''}`);
-    return `${v.VESSEL_ID}: ${h.entries.length} version(s) in the last 5 minutes`;
+    return `${v.VESSEL_ID}: ${h.entries.length} version(s) in the last ${historyS} s`;
   });
 
   // ---------------------------------------------------------------------------
@@ -328,18 +340,20 @@ async function wmsChecks(ext: any, q: (sql: string, b?: Record<string, unknown>)
 
   await check('blockchain table refuses changes', async () => {
     if (!(await has(`SELECT COUNT(*) AS n FROM user_blockchain_tables WHERE table_name = 'STOCK_LEDGER'`))) throw new Skip('STOCK_LEDGER is not a blockchain table here');
+    let refused: string | null = null;
     try {
       await ext.execute('UPDATE stock_ledger SET units = units + 1 WHERE ROWNUM = 1');
-      const n = Number((await one('SELECT COUNT(*) AS n FROM stock_ledger'))?.N ?? 0);
-      if (n) throw new Error('an UPDATE of the ledger was allowed');
-      return 'ledger is empty (start the server to fill it)';
     } catch (e) {
-      const m = String((e as Error).message);
-      if (/allowed/.test(m)) throw e;
-      assert(/ORA-05715|ORA-0571/.test(m), m.split('\n')[0]);
+      refused = String((e as Error).message);
     } finally {
       await ext.rollback();
     }
+    if (refused === null) {
+      const n = Number((await one('SELECT COUNT(*) AS n FROM stock_ledger'))?.N ?? 0);
+      if (n) throw new Error('an UPDATE of the ledger was allowed');
+      return 'ledger is empty (start the server to fill it)';
+    }
+    assert(/ORA-05715/.test(refused), refused.split('\n')[0]);
     const v = await ext.execute(`DECLARE n NUMBER; BEGIN DBMS_BLOCKCHAIN_TABLE.VERIFY_ROWS(schema_name => USER, table_name => 'STOCK_LEDGER', number_of_rows_verified => n); :n := n; END;`,
       { n: { dir: oracledb.BIND_OUT, type: oracledb.NUMBER } });
     return `UPDATE → ORA-05715 · VERIFY_ROWS ok (${v.outBinds.n} rows)`;

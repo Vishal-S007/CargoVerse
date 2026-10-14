@@ -90,7 +90,7 @@ END;
   route: `SELECT wt_wms.shortest_path(:from_node, :to_node) FROM dual   -- Dijkstra in PL/SQL over WH_EDGES`,
   graph: `SELECT COUNT(DISTINCT node_id) AS n, MIN(node_id) AS first_node
   FROM GRAPH_TABLE (cv_warehouse_graph
-         MATCH (d IS location WHERE d.node_id = :dock) -[e IS aisle]-{1,6} (n IS location)
+         MATCH (d IS location WHERE d.node_id = :dock) -[e IS aisle]->{1,6} (n IS location)   -- edges run dock → cross aisle → bays
          WHERE n.node_kind = 'AISLE'
          COLUMNS (n.node_id AS node_id))`,
   search: `SELECT kind, id, sku_id, facility_id, doc_text, severity, ${UTC('created_at')} AS created_utc, distance

@@ -84,7 +84,7 @@ async function runFile(conn: any, oracledb: any, f: string, opts: { soft?: boole
       await conn.execute(s);
     } catch (e) {
       const msg = String((e as Error).message).split('\n')[0];
-      if (opts.soft) { warnings.push(msg); continue; }
+      if (opts.soft) { warnings.push(`${s.replace(/\s+/g, ' ').slice(0, 70)}… → ${msg}`); continue; }
       console.error(`\n\nFailed in ${f}:\n${s.slice(0, 400)}\n\n${(e as Error).message}`);
       process.exit(1);
     }
@@ -100,6 +100,7 @@ async function runFile(conn: any, oracledb: any, f: string, opts: { soft?: boole
   }
   await conn.commit();
   console.log(warnings.length ? `done with ${warnings.length} skipped` : 'ok');
+  for (const w of warnings) console.log(`      skipped: ${w}`);
   return warnings;
 }
 
