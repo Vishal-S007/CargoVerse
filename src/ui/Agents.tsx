@@ -94,6 +94,7 @@ const TOOL_LABEL: Record<string, string> = {
   warehouse_lots: 'lots & FEFO', trace: 'recall trace', cold_chain_status: 'cold chain', reorder_suggestions: 'reorder points', demand_forecast: 'forecast',
   slotting_report: 'ABC slotting', pick_route: 'pick route', scan_label: 'GS1 scan', search_damage_reports: 'vector search', show_warehouse_xray: 'X-ray',
   recall_lot: 'recalled a lot', describe_tables: 'table columns', query_database: 'Oracle SQL',
+  locate: 'map', inspect: 'details', project_docs: 'project docs',
 };
 
 /** Tiny formatter for assistant replies: paragraphs, "- " bullets, numbered lists, **bold** and `code`. */
@@ -197,7 +198,8 @@ export function AssistantTab() {
     'Which lots expire soon?',
     ...(reports ? ['Trace a lot to the stores', 'Show ABC slotting'] : []),
     'Shortest pick route',
-    'Any reports of broken glass?',
+    'Where is the red bus?',
+    'How does FEFO work?',
     ...(reports && status?.oracle ? ['Top products by demand (SQL)'] : []),
   ];
   const demo = status?.mode === 'demo';
@@ -216,7 +218,7 @@ export function AssistantTab() {
     setBusy(true);
     try {
       const history = next.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
-      const r = await api.assistant(history, facility);
+      const r = await api.assistant(history, facility, useApp.getState().selection);
       setMsgs([...next, { role: 'assistant', content: r.reply, tools: r.tools, queries: r.queries, mode: r.mode }]);
       for (const a of r.actions) runAction(a);
     } catch (err) {
@@ -244,6 +246,7 @@ export function AssistantTab() {
             <span className="muted small">
               Answers come from the same live data as the dashboard, limited to what your role can see.
               {reports && status?.oracle ? ' Database questions run in Oracle as your own account, so row-level security applies.' : ''}
+              {' Ask about anything on the map (click it and ask "what is this?") or how the project works.'}
               {manager ? ' It can also create tasks or recall a lot when you ask it to.' : ''}
             </span>
             <div className="chips">{suggestions.map((s) => <button key={s} className="chip-btn" onClick={() => ask(s)}>{s}</button>)}</div>

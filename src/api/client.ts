@@ -145,8 +145,8 @@ export const api = {
   alerts: (facility?: FacilityId) => call<Alert[]>('GET', `/alerts${qs({ facility })}`),
   alertTask: (alertId: string, assigneeId?: number) => call<Task>('POST', '/alerts/task', { alertId, assigneeId }),
   assistantStatus: () => call<AssistantStatus>('GET', '/assistant/status'),
-  assistant: (messages: { role: 'user' | 'assistant'; content: string }[], facilityId: FacilityId) =>
-    call<AssistantReply>('POST', '/assistant', { messages, facilityId }),
+  assistant: (messages: { role: 'user' | 'assistant'; content: string }[], facilityId: FacilityId, selection: EntityRef | null = null) =>
+    call<AssistantReply>('POST', '/assistant', { messages, facilityId, selection }),
 };
 
 export interface Alert {

@@ -169,6 +169,13 @@ Two agents sit in the **Work** panel (and the ✦ button in the header):
   creates tasks or recalls a lot. Every tool is limited to the user's role and sites, and anything it changes is in the
   audit trail.
 
+  **Anything on the map, and how the project works.** "Where is the red bus?", "Where is Ocean Star?", "Who owns the
+  tanker?", or click any object and ask "what is this?" / "where is it going?" — the assistant knows every truck,
+  forklift, pallet, dock, ship, crane, store, delivery van, building, gate and the public traffic (buses, cars, taxis,
+  tankers), and says where each one is in words (street and nearest building). "How does FEFO work?", "Explain
+  row-level security", "How do I run it without Docker?" are answered from this README and `docs/` (a BM25 search over
+  their sections), so the answers stay in step with the documentation.
+
   **Questions answered with SQL.** For anything the tools do not cover ("which carrier was late most often this week?"),
   the assistant writes one read-only Oracle query and runs it **as the user's own database account** (`CV_ALEX`,
   `CV_MEERA`, …). Oracle's row-level security (VPD) then limits the rows to that user's sites, the account cannot see

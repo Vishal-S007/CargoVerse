@@ -1,7 +1,7 @@
 // API endpoints. Every route checks the caller's role permissions and facility access
 // before calling the repository (which enforces the same rules again in Oracle).
 import type { IncomingMessage } from 'node:http';
-import type { FacilityId } from '../src/data/types';
+import type { FacilityId, EntityRef } from '../src/data/types';
 import type { SessionUser, TaskStatus, TaskType, Priority, Role, SimControl } from '../src/api/types';
 import { AppError, type Repo, LIVE_COUNT_TABLES, LIVE_ROW_TABLES } from './db/repo';
 import { config } from './config';
@@ -571,7 +571,9 @@ export function buildRouter(repo: Repo, host: SimHost, opts: Opts): Router {
       .filter((m: { role?: string; content?: unknown }) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
       .map((m: { role: 'user' | 'assistant'; content: string }) => ({ role: m.role, content: m.content }));
     const fac = (ctx.body?.facilityId as FacilityId) ?? u.facilities[0];
-    return runAssistant(host, repo, u, history, fac);
+    const sel = ctx.body?.selection;
+    const selection = sel && typeof sel.kind === 'string' && typeof sel.id === 'string' && sel.id.length <= 60 ? { kind: sel.kind, id: sel.id } as EntityRef : null;
+    return runAssistant(host, repo, u, history, fac, selection);
   }, { perm: 'VIEW_DASHBOARD' });
 
   return router;

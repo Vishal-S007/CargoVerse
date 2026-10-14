@@ -18,6 +18,7 @@ import { TABLE_GROUPS } from './db/schema-meta';
 import type { SimHost } from './simhost';
 import { computeAlerts } from './agent';
 import { DEMO_SQL } from './assistant-sql';
+import { findEntities, inspectEntity, searchDocs, questionTerms, PROJECT_OVERVIEW } from './knowledge';
 
 // ---------------------------------------------------------------- reply shape
 
@@ -59,6 +60,11 @@ const TOOLS: ToolDef[] = [
   { name: 'trace_container', description: 'History of one container number (e.g. OSLU4123057): which ship, crane, truck and site.', input_schema: { type: 'object', properties: { container_no: { type: 'string' } }, required: ['container_no'] } },
   { name: 'get_store_stock', description: 'Vendor stores supplied by the warehouses: shelf stock, reorder points, sales today, open restock orders and vans on the road. Optionally one store_id (ST-01…ST-08).', input_schema: { type: 'object', properties: { store_id: { type: 'string' } } } },
   { name: 'show_in_3d', description: 'Select an object and move the 3D camera to it. Use when the user asks to see, show, find or locate something.', input_schema: { type: 'object', required: ['kind', 'id'], properties: { kind: { type: 'string', enum: ['truck', 'forklift', 'pallet', 'dock', 'charger', 'facility', 'building', 'gate', 'vehicle', 'vessel', 'crane', 'berth', 'store', 'van'] }, id: { type: 'string' } } } },
+
+  // ---- anything in the city, and how the project works
+  { name: 'locate', description: 'Find objects anywhere in the 3D city and say where they are right now, in words (street and nearest building): trucks, forklifts, pallets, docks, ships, cranes, berths, stores, delivery vans, park buildings, gates and public traffic (buses, cars, taxis, tankers, tractors). Query by id, plate, name or kind word, e.g. "bus", "the red bus", "NJ-BUS-014", "Ocean Star", "FreshCart", "delivery vans".', input_schema: { type: 'object', required: ['query'], properties: { query: { type: 'string' } } } },
+  { name: 'inspect', description: 'Everything known about one object (any kind) and where it is now. Use for "this"/"it" when the user has selected something on screen.', input_schema: { type: 'object', required: ['kind', 'id'], properties: { kind: { type: 'string', enum: ['facility', 'truck', 'forklift', 'pallet', 'dock', 'charger', 'vessel', 'crane', 'berth', 'store', 'van', 'vehicle', 'building', 'gate'] }, id: { type: 'string' } } } },
+  { name: 'project_docs', description: 'Search the CargoVerse documentation (README, database design, demo guide) to explain how the project works: features, screens, roles, the database design, PL/SQL, triggers, how a feature is implemented, commands, setup and troubleshooting.', input_schema: { type: 'object', required: ['question'], properties: { question: { type: 'string' } } } },
 
   // ---- Smart Warehouse
   { name: 'warehouse_lots', description: 'Stock by lot: product, supplier, expiry date, days to expiry, quality status (RELEASED / HOLD / RECALLED and why), units, pallets and FEFO rank (1 = the lot to pick next). Filter by site, product, status or expiring within N days. Also returns how many picks broke FEFO.', input_schema: { type: 'object', properties: { ...FAC_PROP, product: { type: 'string', description: 'Product id (e.g. MED-INS) or part of its name' }, status: { type: 'string', enum: ['RELEASED', 'HOLD', 'RECALLED'] }, expiring_within_days: { type: 'integer' } } } },
@@ -229,6 +235,21 @@ export function makeToolbox(host: SimHost, repo: Repo, user: SessionUser, curren
         actions.push({ type: 'focus', ref: { kind: input.kind, id: String(input.id) } as EntityRef });
         return { ok: true, note: 'The view will move to it when you reply.' };
 
+      // ---- anything in the city, and the docs
+      case 'locate': {
+        const found = findEntities(w, String(input.query ?? ''), user.facilities);
+        if (found[0]) actions.push({ type: 'focus', ref: found[0].ref });
+        return found.length ? found.map((f) => ({ kind: f.ref.kind, id: f.ref.id, name: f.title, detail: f.detail, where: f.where })) : { found: 0, note: 'Nothing matches. Try an id, plate or name (or the search box at the top).' };
+      }
+      case 'inspect': {
+        const ref = { kind: String(input.kind ?? ''), id: String(input.id ?? '') } as EntityRef;
+        const r = inspectEntity(w, ref, user.facilities);
+        if (!('error' in r)) actions.push({ type: 'focus', ref });
+        return r;
+      }
+      case 'project_docs':
+        return searchDocs(String(input.question ?? ''), 3);
+
       // ---- Smart Warehouse
       case 'warehouse_lots': {
         const r = await W.lots(facsOf(input));
@@ -367,7 +388,7 @@ function tableList(): string {
   return [...groups].map(([g, ts]) => `${g}: ${ts.join(', ')}`).join('\n');
 }
 
-export async function runAssistant(host: SimHost, repo: Repo, user: SessionUser, history: ChatTurn[], currentFacility: FacilityId): Promise<AssistantReply> {
+export async function runAssistant(host: SimHost, repo: Repo, user: SessionUser, history: ChatTurn[], currentFacility: FacilityId, selection: EntityRef | null = null): Promise<AssistantReply> {
   const box = makeToolbox(host, repo, user, currentFacility);
   const last = history[history.length - 1];
   if (!last || last.role !== 'user' || !last.content.trim()) throw new AppError(400, 'Send a question');
@@ -376,10 +397,16 @@ export async function runAssistant(host: SimHost, repo: Repo, user: SessionUser,
   const base = (process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com').replace(/\/$/, '');
   const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5-5';
   const oracle = (await host.wms.features()).engine === 'oracle';
-  if (!key) return runDemo(box, user, last.content, oracle);
+  // what the user has clicked in the 3D view: "this" / "it" in a question
+  const sel = selection ? inspectEntity(box.w, selection, user.facilities) : null;
+  const selected = selection && sel && !('error' in sel) ? { ref: selection, info: sel } : null;
+  if (!key) return runDemo(box, user, last.content, oracle, selected);
   const canSql = box.allowed.has('query_database');
   const system = [
     'You are the CargoVerse operations assistant inside a live 3D warehouse and logistics dashboard backed by Oracle Database.',
+    `About the project: ${PROJECT_OVERVIEW}`,
+    'You can answer about anything in the city (use locate / inspect — buses, cars, ships, stores, buildings…) and about how the project itself works (use project_docs, then explain in your own words).',
+    selected ? `The user has selected ${selected.ref.kind} ${selected.ref.id} on screen; "this", "it" or "that" means this object. Current details: ${JSON.stringify(selected.info).slice(0, 1500)}` : 'Nothing is selected on screen.',
     `You are helping ${user.fullName} (${user.jobTitle}; access role: ${user.roleName}). Sites they can access: ${user.facilities.join(', ')}. They are currently looking at ${box.home}.`,
     `The operations clock reads ${fmtClock(box.w.simTime)}. Always use the tools rather than guessing figures.`,
     'Answer briefly and concretely, in plain language a warehouse manager or operator uses. Use short lists when listing several items. Quote ids (TRK-2051, LOT-10050, WH-04-C03L2) so the user can find them.',
@@ -434,7 +461,7 @@ export async function runAssistant(host: SimHost, repo: Repo, user: SessionUser,
 const n = (x: number | null | undefined, d = 0) => (x === null || x === undefined ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: d }));
 const pick = <T,>(xs: T[], k: number) => xs.slice(0, k);
 
-async function runDemo(box: Toolbox, user: SessionUser, question: string, oracle: boolean): Promise<AssistantReply> {
+async function runDemo(box: Toolbox, user: SessionUser, question: string, oracle: boolean, selected: { ref: EntityRef; info: Record<string, unknown> } | null): Promise<AssistantReply> {
   const q = question.toLowerCase();
   const out = (reply: string): AssistantReply => ({ reply, actions: box.actions, tools: box.used, queries: box.queries, mode: 'demo' });
   const can = (t: string) => box.allowed.has(t);
@@ -449,7 +476,57 @@ async function runDemo(box: Toolbox, user: SessionUser, question: string, oracle
   const containerNo = /\b[A-Z]{4}\s?\d{7}\b/i.exec(question)?.[0]?.toUpperCase().replace(/\s/g, '');
   const sscc = /(\(00\)\s*)?\d{18}/.exec(question)?.[0];
 
+  const nice = (k: string) => k.replace(/_/g, ' ');
+  const describe = (info: Record<string, any>, ref: EntityRef): string => {
+    const title = String(info.name ?? info.plate ?? info.id ?? ref.id);
+    const skip = new Set(['name', 'kind', 'where', 'status', 'doing', 'what', 'id_and_type', 'at_sea', 'parked_at_depot', 'away']);
+    const facts = Object.entries(info).filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined && v !== '' && typeof v !== 'object').slice(0, 9);
+    const list = Object.entries(info).filter(([, v]) => Array.isArray(v) && (v as unknown[]).length).slice(0, 1);
+    return [
+      `**${title}** — ${info.kind ?? ref.kind}${info.status ? ` · ${info.status}` : ''}`,
+      `- Where: ${info.where}`,
+      ...(info.doing ? [`- Now: ${info.doing}`] : []),
+      ...facts.map(([k, v]) => `- ${nice(k)}: ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : v}`),
+      ...list.map(([k, v]) => `- ${nice(k)}: ${(v as unknown[]).slice(0, 6).join(', ')}`),
+    ].join('\n');
+  };
+  const fromDocs = async (question: string, minScore: number): Promise<string | null> => {
+    const hits = await run<{ file: string; section: string; text: string; score: number }[]>('project_docs', { question });
+    const top = hits[0];
+    if (!top || top.score < minScore) return null;
+    let lines = top.text.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() && !/^\|\s*-{3}/.test(l) && !/^```/.test(l));
+    // a feature table: keep the rows about what was asked (plus the header row)
+    const terms = questionTerms(question).filter((t) => t.length > 2);
+    const rows = lines.filter((l) => l.trim().startsWith('|'));
+    const hitRows = rows.slice(1).filter((l) => terms.some((t) => l.toLowerCase().includes(t)));
+    if (rows.length > 3 && hitRows.length && hitRows.length < rows.length - 1) lines = [...lines.filter((l) => !l.trim().startsWith('|')).slice(0, 2), ...hitRows];
+    let body = '';
+    for (const l of lines) {
+      const row = /^\|(.*)\|$/.exec(l.trim());
+      const line = row ? `- ${row[1].split('|').map((c) => c.trim()).filter(Boolean).join(' — ')}` : l;
+      if ((body + line).length > 1100) break;
+      body += `${line}\n`;
+    }
+    const more = hits.slice(1, 3).map((h) => `${h.section} (${h.file})`).join(' · ');
+    return `**${top.section}** — from ${top.file}:\n${body.trim()}${more ? `\n\nRelated: ${more}.` : ''}`;
+  };
+
   try {
+    // ---- "this" / "it": the object selected in the 3D view
+    if (selected && /\b(this|it|that|selected|here)\b/.test(q) && !/\b(lots?|cold|reorder|forecast|slot\w*|route|damage|sql|database)\b/.test(q)) {
+      box.used.push('inspect');
+      box.actions.push({ type: 'focus', ref: selected.ref });
+      return out(describe(selected.info, selected.ref));
+    }
+
+    // ---- explanations of how the project works
+    const explain = /^(how (does|do|is|are|can|did)|explain|why|tell me about|describe|what (is|are|does|do) (a |an |the )?(cargoverse|project|database lab|smart warehouse|vpd|row.level|flashback|fefo|abc|sscc|gs1|blockchain|match_recognize|model clause|eoq|reorder point|safety stock|property graph|graph_table|vector|teq|event queue|x-?ray|demo mode|assistant|exception watcher|pl\/sql|trigger|package|view|role|permission))/.test(q)
+      && !/\b(doing|going|today|now|right now|status)\b/.test(q);
+    if (explain) {
+      const a = await fromDocs(question, 1.5);
+      if (a) return out(a);
+    }
+
     // ---- ids first
     if (sscc) {
       const r = await run<Record<string, any>>('scan_label', { code: sscc });
@@ -480,6 +557,40 @@ async function runDemo(box: Toolbox, user: SessionUser, question: string, oracle
     if (containerNo && /[a-z]{4}\d{7}/i.test(containerNo)) {
       const r = await run<any>('trace_container', { container_no: containerNo });
       return out(`**${containerNo}** is ${r.now}.\n${(r.moves as any[]).length ? (r.moves as any[]).map((m) => `- ${m.moveType ?? m.move ?? ''} ${m.vesselId ?? ''} ${m.truckId ?? ''} ${m.facilityId ?? ''}`.replace(/\s+/g, ' ')).join('\n') : 'No moves recorded yet.'}`);
+    }
+
+    // ---- where is …? (anything in the city: buses, cars, ships, stores, buildings, vans …)
+    if (/\bwhere\b|\bfind\b|\blocate\b|\bshow me\b|\bwhich\b.*\b(bus|car|taxi|ship|van|store|crane)/.test(q)) {
+      const query = question.replace(/^(where('s| is| are)?|find|locate|show me)\s+(is |are )?(the |a |an |all |my )?/i, '').replace(/[?.!]+$/, '').trim();
+      const found = await run<any>('locate', { query });
+      if (Array.isArray(found) && found.length === 1) {
+        const info = await run<Record<string, any>>('inspect', { kind: found[0].kind, id: found[0].id });
+        return out(describe(info, { kind: found[0].kind, id: found[0].id } as EntityRef));
+      }
+      if (Array.isArray(found) && found.length > 1) {
+        return out(`**${found.length} match${found.length === 1 ? '' : 'es'}** (the view moves to the first):\n${found.map((f: any) => `- ${f.name}${f.detail ? ` (${f.detail})` : ''}: ${f.where}`).join('\n')}`);
+      }
+      // a colour that does not exist ("the purple car"): say so and list what there is
+      const colour = /\b(red|blue|green|yellow|orange|white|black|grey|gray|purple|pink)\b/.exec(q)?.[1];
+      if (colour) {
+        const all = findEntities(box.w, query.replace(new RegExp(`\\b${colour}\\b`, 'i'), ''), user.facilities);
+        if (all.length) return out(`There is no ${colour} one right now. These are on the map:\n${all.map((f) => `- ${f.title}: ${f.where}`).join('\n')}`);
+      }
+    }
+
+    // ---- about a vehicle or other object by kind ("who owns the tanker?", "what route does the taxi take?")
+    if (/\b(bus(es)?|cars?|taxis?|tankers?|tractors?)\b/.test(q) || (/\b(who owns|owner|whose)\b/.test(q) && findEntities(box.w, question, user.facilities, 2).length)) {
+      const found = findEntities(box.w, question, user.facilities);
+      if (found.length === 1) {
+        box.used.push('locate'); box.actions.push({ type: 'focus', ref: found[0].ref });
+        const info = inspectEntity(box.w, found[0].ref, user.facilities);
+        if (!('error' in info)) return out(describe(info, found[0].ref));
+      }
+      if (found.length > 1) {
+        box.used.push('locate'); box.actions.push({ type: 'focus', ref: found[0].ref });
+        const rows = found.map((f) => { const i = inspectEntity(box.w, f.ref, user.facilities) as Record<string, any>; return `- ${f.title} — ${i.owner ?? i.company ?? ''}${i.route ? `, ${i.route}` : ''}: ${f.where}`; });
+        return out(`**${found.length} found** (the view moves to the first):\n${rows.join('\n')}`);
+      }
     }
 
     // ---- warehouse
@@ -586,11 +697,22 @@ async function runDemo(box: Toolbox, user: SessionUser, question: string, oracle
       const low = (r.inventory as any[]).filter((l) => l.low);
       return out(`**${r.site}** at ${r.clock}:\n- ${n(r.stock_pallets)} pallets (${r.fill_pct}% full), ${r.stock_change_today >= 0 ? '+' : ''}${r.stock_change_today} today\n- ${r.trucks_on_site} trucks on site, ${r.trucks_inbound} inbound; docks ${r.docks_occupied}\n- On-time delivery ${r.on_time_delivery_pct}%\n${low.length ? `- Below reorder level: ${low.map((l) => l.product).join(', ')}` : '- No product below its reorder level'}`);
     }
+    const lastTry = await fromDocs(question, 2.5);
+    if (lastTry) return out(lastTry);
+    const named = findEntities(box.w, question, user.facilities, 3);
+    if (named.length === 1) {
+      box.used.push('locate');
+      box.actions.push({ type: 'focus', ref: named[0].ref });
+      const info = inspectEntity(box.w, named[0].ref, user.facilities);
+      if (!('error' in info)) return out(describe(info, named[0].ref));
+    }
     return out([
       'I\'m running in **demo mode** (no Anthropic API key on the server), so I answer from built-in rules. Try:',
       `- "Is the cold chain OK?" · "Which lots expire soon?"${can('trace') ? ' · "Trace LOT-10050"' : ' · "What should I work on next?"'}`,
       ...(can('reorder_suggestions') ? ['- "What should we reorder?" · "Forecast for Nitrile Gloves" · "Show ABC slotting"'] : []),
       '- "Shortest pick route" · "Any reports of broken glass?" · "What needs attention?"',
+      '- Anything in the city: "Where is the red bus?" · "Where is Ocean Star?" · click something and ask "what is this?"',
+      '- How it works: "How does FEFO work?" · "Explain row-level security" · "What is the Smart Warehouse?"',
       ...(can('query_database') && oracle ? ['- From Oracle: "top products by demand" · "how many trucks" · "stock by supplier" · "latest audit changes"'] : []),
       '',
       'With `ANTHROPIC_API_KEY` in `.env`, Claude answers any question and writes its own SQL.',
