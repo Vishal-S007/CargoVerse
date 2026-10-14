@@ -26,19 +26,61 @@ Browser (React + Three.js)  ──HTTP / live stream──▶  Node API server  
    login · 3D yard · tasks                          auth · roles · live ops              tables · PL/SQL · triggers · views
 ```
 
-## Quick start on a Mac (Apple Silicon or Intel)
+## Run it on your computer (Windows, macOS or Linux)
 
-You need Node.js 18+ and Docker Desktop (or Colima) for the Oracle container.
+[![CI](https://github.com/Vishal-S007/CargoVerse/actions/workflows/ci.yml/badge.svg)](https://github.com/Vishal-S007/CargoVerse/actions/workflows/ci.yml)
+
+**You need**
+
+- **Node.js 18 or newer** (the LTS from https://nodejs.org) — check with `node -v`
+- **Git** — https://git-scm.com
+- **Docker Desktop** for the Oracle database (https://www.docker.com/products/docker-desktop/; on Linux, Docker
+  Engine with the compose plugin). Start it once and wait for "Engine running". About 3 GB of free disk space.
+
+No Oracle account, licence or download is needed: `npm run db:up` pulls the free Oracle Database 23ai image.
+
+**1. Get the code and install**
 
 ```bash
-git clone https://github.com/Vishal-S007/CargoVerse.git && cd CargoVerse
-npm install                 # installs React, Three.js, Vite and the Oracle driver
-cp .env.example .env        # then set SESSION_SECRET to any long random text
-npm run db:up               # starts Oracle Database Free in Docker (first start: ~1–2 min)
-npm run db:setup            # creates tables, PL/SQL, views and loads the seed data
-                            # (already set up an older version? run npm run db:reset — it recreates everything)
-npm run dev                 # API on :4000 + website on http://localhost:5173
+git clone https://github.com/Vishal-S007/CargoVerse.git
+cd CargoVerse
+npm install
 ```
+
+**2. Start Oracle and create the database** (first time only)
+
+```bash
+npm run db:up        # starts Oracle Database 23ai Free in Docker (first time: ~1 GB download, then 1–2 min)
+npm run db:setup     # creates all tables, PL/SQL, views, the Database Lab and the Smart Warehouse, loads the data
+npm run db:selftest  # optional: about 30 checks against the database, each PASS / FAIL / SKIP
+```
+
+`db:setup` waits for Oracle to finish starting, so it can be run straight after `db:up`.
+
+**3. Run the app**
+
+```bash
+npm run dev          # then open http://localhost:5173
+```
+
+Next time, only `npm run db:up` (if Docker was restarted) and `npm run dev` are needed.
+
+**No Docker?** `npm run dev:memory` runs the whole app without Oracle (data kept in `.data/`); every screen
+works, and the database-only features say they are simulated.
+
+**Settings (optional).** The defaults work out of the box. To change ports, passwords or add an AI key, copy
+`.env.example` to `.env` (Windows: `copy .env.example .env`; macOS/Linux: `cp .env.example .env`) and edit it.
+Set `SESSION_SECRET` to any long random text if sign-ins should survive a server restart.
+
+**If something goes wrong**
+
+| Problem | Fix |
+| --- | --- |
+| `npm run db:up` says Docker is not installed or not running | Install / open Docker Desktop and wait for "Engine running", then run it again |
+| `db:setup` says the schema already exists | `npm run db:lab` updates it and keeps your data; `npm run db:reset` recreates it (**deletes all data**) |
+| Port 1521, 4000 or 5173 is already in use | Stop the other program, or change `PORT` in `.env` (Oracle: the `ports` line in `docker-compose.yml`) |
+| The website opens but cannot sign in | The API is not running: read the box printed by `npm run dev` (usually Oracle is not started) |
+| Windows: `npm` scripts blocked by PowerShell | Run them in Command Prompt, or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once |
 
 Sign in with one of the demo accounts (shown on the login page):
 
@@ -131,6 +173,7 @@ Two agents sit in the **Work** panel (and the ✦ button in the header):
 | `npm run dev:memory` | Run without Oracle (in-memory store saved to `.data/`), handy for UI work |
 | `npm run build` then `npm start` | Production build; the API also serves the website on http://localhost:4000 |
 | `npm run typecheck` | TypeScript checks for the website and the server |
+| `npm run smoke` | After `npm run build`: starts the server, signs in and calls the main endpoints (in-memory database; `DB_MODE=oracle` for Oracle) |
 | `npm run db:lab` | Install or update the Database Lab on the existing schema (keeps your data) |
 | `npm run db:selftest` | Check the Database Lab and Smart Warehouse features against Oracle (PASS/FAIL/SKIP) |
 | `npm run ai:model` | Install the sentence-transformer for semantic search (optional) |

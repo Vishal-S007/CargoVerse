@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && tsc --noEmit -p server && vite build && node scripts/build-server.mjs",
     "start": "node --enable-source-maps server-dist/index.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p server",
+    "smoke": "node scripts/smoke.mjs",
     "db:up": "node scripts/db-up.mjs",
     "db:down": "docker compose stop oracle",
     "db:setup": "node scripts/build-server.mjs && node server-dist/setup.mjs",

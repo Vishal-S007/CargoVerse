@@ -1,0 +1,57 @@
+# Checks that a fresh clone installs, builds and runs on Windows, macOS and Linux,
+# and that the whole Oracle setup (schema, Database Lab, Smart Warehouse) installs and passes db:selftest.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  app:
+    name: Build and run (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: 18 }
+          - { os: ubuntu-latest, node: 22 }
+          - { os: windows-latest, node: 20 }
+          - { os: macos-latest, node: 20 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Smoke test without Oracle
+        run: npm run smoke
+
+  oracle:
+    name: Oracle 23ai setup and self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Start Oracle (npm run db:up)
+        run: npm run db:up
+      - name: Create the schema (npm run db:setup)
+        run: npm run db:setup
+      - name: Self-test (npm run db:selftest)
+        run: npm run db:selftest
+      - name: Smoke test with Oracle
+        run: npm run smoke
+        env:
+          DB_MODE: oracle
+      - name: Oracle log on failure
+        if: failure()
+        run: docker logs --tail 200 waretrack-oracle
