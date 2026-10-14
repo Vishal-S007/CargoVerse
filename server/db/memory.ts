@@ -25,6 +25,10 @@ import {
 } from './people';
 import { hashPassword } from '../auth';
 
+import { parseSimpleUpdate, simulateLab, checkControlValue, VPD_TABLES, VPD_PROBE_TABLES, LAB_ACCOUNTS } from '../lab';
+import type { ExternalCommand, ExternalSqlResult, LabRun, LabScenario, RowHistory, VpdReport } from '../../src/api/types';
+import type { TimeFrame } from '../../src/data/timeframe';
+
 interface MemEmployee { id: number; fullName: string; email: string; phone: string | null; jobCode: string; facilityId: FacilityId | null; status: Employee['status'] }
 interface MemUser { id: number; username: string; hash: string; role: Role; employeeId: number; active: boolean; facilities: FacilityId[]; createdAt: string; createdBy: number | null; lastLoginAt: string | null; failedLogins: number }
 interface MemTask extends Omit<Task, 'assigneeName' | 'createdByName' | 'lastNote'> { shipmentId: string | null }
@@ -717,5 +721,97 @@ export class MemoryRepo implements Repo {
       fetchedAt: new Date().toISOString(), ms: Math.round((performance.now() - t0) * 10) / 10,
       columns: cols, values: cols.map((c) => (row[c] === undefined ? null : row[c])),
     };
+  }
+
+  // ---------------------------------------------------------------- Database Lab (simulated: no Oracle here)
+  private cmdQueue: ExternalCommand[] = [];
+  private cmdSeq = 0;
+
+  async labInfo() {
+    return { control: true, concurrency: true, vpd: { installed: true, accounts: LAB_ACCOUNTS.map((a) => a.account), tables: VPD_TABLES, reason: 'Simulated — connect Oracle for the real policy' } };
+  }
+
+  async pollCommands(): Promise<ExternalCommand[]> { return this.cmdQueue.splice(0); }
+  async ackCommands(): Promise<void> { /* nothing to record without Oracle */ }
+
+  async runExternalSql(userId: number, sql: string): Promise<ExternalSqlResult> {
+    const t0 = performance.now();
+    let ch: ReturnType<typeof parseSimpleUpdate>;
+    try {
+      ch = parseSimpleUpdate(sql);
+      checkControlValue(ch.table, ch.column, ch.value);
+    } catch (e) {
+      throw new AppError(400, (e as Error).message);
+    }
+    const w = this.worldOrSeed();
+    let old: string | null = null;
+    switch (ch.table) {
+      case 'PORT_BERTHS': {
+        const b = w.port.berths[ch.key];
+        if (!b) throw new AppError(400, `0 rows updated: no berth ${ch.key}`);
+        old = b.open ? 'Y' : 'N';
+        if (ch.value === 'N' && !Object.values(w.port.berths).some((x) => x.id !== b.id && x.open)) throw new AppError(400, 'ORA-20004: At least one berth must stay open');
+        break;
+      }
+      case 'VESSELS': { const v = w.port.vessels[ch.key]; if (!v) throw new AppError(400, `0 rows updated: no vessel ${ch.key}`); old = v.hold ? 'Y' : 'N'; break; }
+      case 'STORE_STOCK': {
+        const [store, sku] = ch.key.split(':');
+        const line = w.retail.stores[store]?.lines.find((l) => l.skuId === sku);
+        if (!line) throw new AppError(400, `0 rows updated: store ${store} does not stock ${sku}`);
+        old = String(Math.round(line.units));
+        break;
+      }
+      case 'FORKLIFTS': { const f = w.forklifts[ch.key]; if (!f) throw new AppError(400, `0 rows updated: no forklift ${ch.key}`); old = String(Math.round(f.battery * 10) / 10); break; }
+      case 'SIM_STATE': old = ch.column === 'PAUSED' ? (this.d.control.paused ? 'Y' : 'N') : String(this.d.control.speed); break;
+      case 'PARK_BUILDINGS': {
+        const b = this.d.park.buildings.find((x) => x.id === ch.key);
+        if (!b) throw new AppError(400, `0 rows updated: no building ${ch.key}`);
+        old = b.status;
+        b.status = ch.value as typeof b.status;
+        break;
+      }
+      case 'TASKS': {
+        const t = this.d.tasks.find((x) => String(x.id) === ch.key);
+        if (!t) throw new AppError(400, `0 rows updated: no task ${ch.key}`);
+        old = t.status;
+        this.addUpdate(t.id, userId, t.status, ch.value as TaskStatus, 'Changed from the SQL lab');
+        t.status = ch.value as TaskStatus;
+        break;
+      }
+    }
+    this.cmdQueue.push({
+      id: ++this.cmdSeq, table: ch.table, key: ch.key, column: ch.column, oldValue: old, newValue: ch.value,
+      dbUser: 'CARGOVERSE (memory)', program: 'CargoVerse SQL Lab', host: 'localhost', at: new Date().toISOString(),
+    });
+    this.audit(userId, 'SQL_DML', 'DATABASE', null, null, sql.replace(/\s+/g, ' ').slice(0, 1800));
+    this.scheduleSave();
+    return { statement: sql.trim().replace(/;\s*$/, ''), rowsAffected: 1, ms: Math.round(performance.now() - t0), queued: 1, source: 'simulated' };
+  }
+
+  async flashback(): Promise<TimeFrame> { throw new AppError(501, 'Flashback Query needs Oracle; using the server\'s in-memory history instead'); }
+  async rowHistory(): Promise<RowHistory> { throw new AppError(501, 'Flashback Versions Query needs Oracle'); }
+
+  async vpdReport(): Promise<VpdReport> {
+    const count = (table: string, sites: string[] | null) => (this.memRows(table) ?? []).filter((r) => !sites || sites.includes(String(r.FACILITY_ID))).length;
+    const seen = (sites: string[] | null) => [...new Set((this.memRows('TRUCKS') ?? []).map((r) => String(r.FACILITY_ID)).filter((f) => !sites || sites.includes(f)))].sort();
+    const owner = Object.fromEntries(VPD_PROBE_TABLES.map((t) => [t, count(t, null)]));
+    const accounts = LAB_ACCOUNTS.map((a) => {
+      const u = this.d.users.find((x) => x.username === a.username);
+      const all = !!u && ROLE_PERMS[u.role].includes('VIEW_ALL_FACILITIES');
+      const sites = u ? (all ? null : u.facilities.slice().sort()) : [];
+      return {
+        account: a.account, appUser: a.username, role: u?.role ?? '—', sites: sites ?? ['WH-01', 'WH-02', 'WH-04'],
+        predicate: sites === null ? null : sites.length ? `facility_id IN (${sites.map((s) => `'${s}'`).join(', ')})` : '1 = 0',
+        counts: Object.fromEntries(VPD_PROBE_TABLES.map((t) => [t, count(t, sites)])), sitesSeen: seen(sites), ms: 0,
+      };
+    });
+    return { source: 'simulated', tables: VPD_TABLES, owner, accounts, at: new Date().toISOString(), sql: VPD_PROBE_TABLES.map((t) => `SELECT COUNT(*) FROM ${t.toLowerCase()}`).join(';\n') };
+  }
+
+  async runLab(_userId: number, scenario: LabScenario): Promise<LabRun> {
+    const dock = Object.values(this.worldOrSeed().docks)[0]?.id ?? 'WH-01-D1';
+    const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
+    const slot = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:00`;
+    return simulateLab(scenario, dock, slot);
   }
 }

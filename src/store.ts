@@ -7,7 +7,8 @@
 //  - offline: no server reachable. A local demo runs in the browser (localStorage).
 import { create } from 'zustand';
 import type { WorldState, FacilityId, EntityRef } from './data/types';
-import type { SessionUser, SimControl, DbLiveStatus } from './api/types';
+import type { SessionUser, SimControl, DbLiveStatus, SqlFeedItem } from './api/types';
+import { applyFrame, type TimeFrame } from './data/timeframe';
 import { dataSource } from './data/adapter';
 import { createSeedWorld } from './data/seed';
 import { stepWorld, syncPoses } from './sim/engine';
@@ -16,14 +17,27 @@ import { findBuilding, findVehicle, setPark, syncParkClock } from './data/parkCl
 import { PARK_GATES, type GateCode } from './data/park';
 
 export type FleetTab = 'docks' | 'forklifts' | 'trucks';
-export type WorkTab = 'tasks' | 'alerts' | 'assistant' | 'activity' | 'team' | 'users' | 'reports' | 'trade' | 'port' | 'park' | 'database';
+export type WorkTab = 'tasks' | 'alerts' | 'assistant' | 'activity' | 'team' | 'users' | 'reports' | 'trade' | 'port' | 'park' | 'database' | 'lab';
 export type CameraCommand =
   | { kind: 'zoomIn' | 'zoomOut' | 'rotateLeft' | 'rotateRight' | 'home' | 'overview' }
   | { kind: 'focus'; ref: EntityRef };
 
 let world: WorldState = createSeedWorld();
 syncPoses(world);
+/** The world the 3D scene and the panels draw: the live one, or a moment in the past while time travelling. */
 export const getWorld = (): WorldState => world;
+/** The latest live world (differs from getWorld() only while time travelling). */
+let liveWorld: WorldState = world;
+export const getLiveWorld = (): WorldState => liveWorld;
+
+export interface TimeTravel {
+  open: boolean;      // the time machine bar is shown
+  ago: number | null; // seconds into the past being shown (null = live)
+  frame: TimeFrame | null;
+  loading: boolean;
+  error: string | null;
+  playing: boolean;
+}
 
 interface AppState {
   mode: 'live' | 'offline' | null;
@@ -31,7 +45,16 @@ interface AppState {
   db: 'oracle' | 'memory' | null;
   connection: 'connecting' | 'live' | 'reconnecting';
   control: SimControl;
-  versions: { tasks: number; audit: number; gate: number };
+  versions: { tasks: number; audit: number; gate: number; park?: number };
+  /** Changes made in SQL Developer (or any outside client) that the server applied to the city. */
+  sqlFeed: SqlFeedItem[];
+  sqlFeedSeen: number;
+  followSql: boolean;
+  setFollowSql: (v: boolean) => void;
+  timeTravel: TimeTravel;
+  openTimeMachine: (open: boolean) => void;
+  travelTo: (ago: number | null) => Promise<void>;
+  setPlaying: (playing: boolean) => void;
   /** Database write-through status from the live stream (null offline). */
   dbLive: DbLiveStatus | null;
   parkVersion: number;
@@ -77,6 +100,40 @@ export const useApp = create<AppState>((set, get) => ({
   connection: 'connecting',
   control: { paused: false, speed: 1 },
   versions: { tasks: 0, audit: 0, gate: 0 },
+  sqlFeed: [],
+  sqlFeedSeen: 0,
+  followSql: true,
+  setFollowSql: (v) => set({ followSql: v }),
+  timeTravel: { open: false, ago: null, frame: null, loading: false, error: null, playing: false },
+  openTimeMachine: (open) => {
+    if (!open) void get().travelTo(null);
+    set({ timeTravel: { ...get().timeTravel, open, playing: false } });
+  },
+  travelTo: async (ago) => {
+    const tt = get().timeTravel;
+    if (ago === null) {
+      if (tt.ago === null) { set({ timeTravel: { ...tt, playing: false, error: null } }); return; }
+      world = liveWorld;
+      const c = get().control;
+      syncParkClock(world.realTime, c.paused, c.speed);
+      set({ timeTravel: { ...tt, ago: null, frame: null, loading: false, error: null, playing: false }, tick: get().tick + 1 });
+      return;
+    }
+    if (get().mode !== 'live') { set({ timeTravel: { ...tt, error: 'The time machine needs the CargoVerse server' } }); return; }
+    set({ timeTravel: { ...tt, ago, loading: true, error: null } });
+    try {
+      const frame = await api.labFrame(ago);
+      if (get().timeTravel.ago !== ago) return; // a newer request superseded this one
+      world = applyFrame(liveWorld, frame);
+      syncParkClock(frame.realTime, true, 0);
+      const s = get();
+      set({ timeTravel: { ...s.timeTravel, frame, loading: false, error: null }, tick: s.tick + 1 });
+      if (s.selection && !entityExists(s.selection)) set({ selection: null });
+    } catch (e) {
+      set({ timeTravel: { ...get().timeTravel, loading: false, error: (e as Error).message, playing: false } });
+    }
+  },
+  setPlaying: (playing) => set({ timeTravel: { ...get().timeTravel, playing } }),
   dbLive: null,
   parkVersion: 0,
   startView: typeof location !== 'undefined' && new URLSearchParams(location.search).get('view') === 'site' ? 'site' : 'park',
@@ -230,11 +287,37 @@ export function startLive(user: SessionUser, db: 'oracle' | 'memory'): Promise<(
     const connect = () => {
       es = new EventSource(streamUrl());
       es.addEventListener('snapshot', (ev) => {
-        const d = JSON.parse((ev as MessageEvent<string>).data) as { world: WorldState; control: SimControl; versions: { tasks: number; audit: number; gate: number }; db?: DbLiveStatus };
-        world = d.world;
-        syncParkClock(world.realTime, d.control.paused, d.control.speed);
+        const d = JSON.parse((ev as MessageEvent<string>).data) as {
+          world: WorldState; control: SimControl; versions: { tasks: number; audit: number; gate: number; park?: number }; db?: DbLiveStatus;
+          lab?: { feed: SqlFeedItem[] };
+        };
+        liveWorld = d.world;
         const s = useApp.getState();
+        const travelling = s.timeTravel.ago !== null;
+        if (!travelling) {
+          world = d.world;
+          syncParkClock(world.realTime, d.control.paused, d.control.speed);
+        }
         const patch: Partial<AppState> = { control: d.control, versions: d.versions, connection: 'live', tick: s.tick + 1, dbLive: d.db ?? null };
+        // a building changed in the database (e.g. from SQL Developer): reload the park records
+        if (d.versions.park !== undefined && s.versions.park !== undefined && d.versions.park !== s.versions.park) {
+          void api.park().then((p) => { setPark(p); useApp.setState({ parkVersion: useApp.getState().parkVersion + 1 }); }).catch(() => undefined);
+        }
+        const feed = d.lab?.feed ?? [];
+        const newest = feed.length ? feed[feed.length - 1].id : 0;
+        if (first) {
+          patch.sqlFeed = feed.slice().reverse();
+          patch.sqlFeedSeen = newest;
+        } else if (newest > s.sqlFeedSeen) {
+          const fresh = feed.filter((x) => x.id > s.sqlFeedSeen);
+          patch.sqlFeed = [...fresh.slice().reverse(), ...s.sqlFeed].slice(0, 30);
+          patch.sqlFeedSeen = newest;
+          const last = fresh[fresh.length - 1];
+          if (s.followSql && last.ref && !travelling) {
+            const ref = last.ref;
+            window.setTimeout(() => { useApp.getState().select(ref); useApp.getState().camera({ kind: 'focus', ref }); }, 60);
+          }
+        }
         if (first) {
           first = false;
           Object.assign(patch, restoreUi(loadUiSync(), user.facilities), { ready: true });

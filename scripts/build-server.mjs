@@ -2,7 +2,7 @@
 import * as esbuild from 'esbuild';
 
 export const serverBuild = {
-  entryPoints: { index: 'server/index.ts', setup: 'server/db/setup.ts', 'gen-seed': 'server/db/gen-seed.ts' },
+  entryPoints: { index: 'server/index.ts', setup: 'server/db/setup.ts', 'gen-seed': 'server/db/gen-seed.ts', selftest: 'server/db/selftest.ts' },
   outdir: 'server-dist',
   outExtension: { '.js': '.mjs' },
   bundle: true,

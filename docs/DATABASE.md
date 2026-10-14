@@ -13,6 +13,10 @@ and 23ai (including the free editions).
 | `03_views.sql` | 17 views used by the KPIs, reports, the park directory, the import/export log, the port and the stores |
 | `04_seed.sql` | Seed data (generated from the app's data by `npm run db:gen-seed`) |
 | `05_reports.sql` | 25 sample queries: joins, ROLLUP, HAVING, window functions, PIVOT, anti-joins, MINUS, date arithmetic and the PL/SQL API. They also appear in the app's SQL console |
+| `06_lab.sql` | Database Lab: the `DB_COMMANDS` queue and its `TRG_EXT_*` triggers, `DOCK_BOOKINGS`, `LAB_STOCK` and package `WT_LAB` |
+| `07_security_sys.sql` | Run as `SYS` (done automatically): `EXECUTE` on `DBMS_RLS` and the demo accounts `CV_ADMIN`, `CV_ALEX`, `CV_MEERA`, `CV_ZOE` |
+| `08_security.sql` | `DB_ACCOUNTS`, package `WT_SECURITY` and the `CV_SITE_ROWS` VPD policy on 15 tables |
+| `09_security_sys.sql` | Run as `SYS`: synonyms so the demo accounts can write `trucks` instead of `waretrack.trucks` |
 | `99_drop_all.sql` | Removes every CargoVerse object |
 
 ## Entity–relationship diagram
@@ -185,6 +189,95 @@ Administrators and managers have a **Database** tab in the Work panel:
 - **SQL activity**: the statements the server has sent to Oracle, with timings, including
   the live-operations writes every 2 seconds.
 
+## Database Lab
+
+Four features that exist only because the city lives in a database. `npm run db:setup` installs
+them; `npm run db:lab` adds them to an existing schema without touching the data, and
+`npm run db:selftest` checks all four against Oracle.
+
+### 1. Control the city from SQL
+
+Seven tables can be changed from outside the application:
+
+| Table | Column(s) | In the city |
+| --- | --- | --- |
+| `PORT_BERTHS` | `is_open` | The berth closes; the next ship waits at anchor (at least one berth must stay open — `TRG_PORT_BERTHS_ONE_OPEN`, `ORA-20004`) |
+| `VESSELS` | `on_hold` | The ship stops wherever it is |
+| `STORE_STOCK` | `units` | The shelf empties; the store reorders and a van brings stock |
+| `FORKLIFTS` | `battery_pct` | The forklift finishes its move and goes to charge; an alert appears |
+| `SIM_STATE` | `paused`, `speed` | The whole city pauses or speeds up |
+| `PARK_BUILDINGS` | `bldg_status` | The building shows maintenance cones or closes |
+| `TASKS` | insert, `task_status`, `assigned_to`, `priority` | The task appears or changes in everyone's Work panel |
+
+How it works: the CargoVerse server tags each of its sessions with
+`MODULE = 'cargoverse-api'`. An `AFTER UPDATE … FOR EACH ROW` trigger on each table calls
+`WT_LAB.IS_EXTERNAL`; for any other session (SQL Developer, SQL*Plus, a script) it writes the change
+to `DB_COMMANDS` with the old and new value, the database user, program, host and OS user. The server
+reads the `PENDING` rows every second, applies them to the live city, marks them `APPLIED` or
+`REJECTED`, and shows them as notifications with the camera flying to the place that changed.
+
+The server writes the live city back every 2 seconds. To never overwrite a row an outside session
+is still changing, it first runs `SELECT … FOR UPDATE SKIP LOCKED` and leaves locked rows for the
+next round.
+
+```sql
+-- in SQL Developer, signed in as waretrack
+UPDATE port_berths SET is_open = 'N' WHERE berth_code = 'B1';
+COMMIT;   -- nothing happens until you commit: other sessions cannot see uncommitted changes
+SELECT cmd_id, table_name, row_key, old_value, new_value, cmd_status, client_program FROM db_commands ORDER BY cmd_id DESC;
+```
+
+### 2. Time machine (Flashback)
+
+Oracle keeps the previous versions of changed rows in its undo data. The time machine converts a
+moment to an SCN (`TIMESTAMP_TO_SCN`) and reads 12 tables `AS OF SCN` at that one SCN, so the
+picture is consistent across tables. Row history uses **Flashback Versions Query**:
+
+```sql
+SELECT versions_starttime, versions_endtime, versions_operation, vessel_status, berth_code, discharged
+  FROM vessels VERSIONS BETWEEN TIMESTAMP SYSTIMESTAMP - INTERVAL '5' MINUTE AND SYSTIMESTAMP
+ WHERE vessel_id = 'VSL-01'
+ ORDER BY versions_startscn DESC NULLS FIRST;
+```
+
+How far back depends on `UNDO_RETENTION` (default 900 s); the app allows up to `FLASHBACK_MAX_S`
+(600 s). If the undo is gone (`ORA-01555`, `ORA-08180`) or the table was just recreated
+(`ORA-01466`), the server uses its own in-memory snapshots and says so.
+
+### 3. Row-level security (Virtual Private Database)
+
+Each demo database account is mapped in `DB_ACCOUNTS` to a CargoVerse user. The policy
+`CV_SITE_ROWS` on 15 tables with a `FACILITY_ID` calls `WT_SECURITY.SITE_FILTER`, which returns:
+
+* `NULL` (no filter) for the schema owner and for users with `VIEW_ALL_FACILITIES`;
+* `facility_id IN ('WH-04')` built from `USER_FACILITY_ACCESS` for everyone else;
+* `1 = 0` for unknown or deactivated accounts.
+
+The policy covers `SELECT, INSERT, UPDATE, DELETE` with `update_check`, so rows outside the user's
+sites can be neither read nor written. The demo accounts have `SELECT` on every table except
+`APP_USERS`, `USER_SESSIONS` and `DB_ACCOUNTS`. Changing a user's site access in the app changes what
+their database account sees, immediately.
+
+| Account | CargoVerse user | Sees |
+| --- | --- | --- |
+| `CV_ADMIN` | admin | every site |
+| `CV_ALEX` | alex.chen | WH-01, WH-04 |
+| `CV_MEERA` | meera.iyer | WH-02 |
+| `CV_ZOE` | zoe.reyes | WH-04 |
+
+Password `Cargo_2026` (`LAB_DB_PASSWORD` in `.env`).
+
+### 4. Concurrency lab
+
+Each experiment opens two sessions and runs them against each other on sandbox tables:
+
+| Experiment | Result | Mechanism |
+| --- | --- | --- |
+| Double booking | Protected — one booking, the second session waits and is refused | `WT_LAB.BOOK_DOCK` locks the dock row with `SELECT … FOR UPDATE WAIT 15`; unique key `UQ_DOCK_SLOT` as a final guard |
+| Lost update | Anomaly — one sale disappears | Both sessions read, then write `units = :value` |
+| The fix | Protected — both sales counted | `SELECT … FOR UPDATE` makes the second session wait for the first |
+| Deadlock | Detected — `ORA-00060` | A locks LAB-A, B locks LAB-B, each then needs the other; Oracle rolls back one statement |
+
 ## Design notes
 
 **Normalization.** The schema is in third normal form. Lookups are separate tables:
@@ -281,3 +374,6 @@ The project was once called WareTrack. The database user, its password, the Dock
 keep working; so do internal keys such as the company id `WARETRACK` and carrier `WareTrack`.
 
 Then open `db/oracle/05_reports.sql` and run the queries.
+
+For the Database Lab, also make connections for `cv_zoe`, `cv_alex`, `cv_meera` and `cv_admin`
+(password `Cargo_2026`, same host, port and service) — see [DEMO.md](DEMO.md).

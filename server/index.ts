@@ -20,7 +20,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const host = new SimHost(repo, config.persistEveryMs);
+  const host = new SimHost(repo, config.persistEveryMs, config.lab.flashbackMaxS);
   await host.start();
   const router = buildRouter(repo, host, {
     secret: config.sessionSecret, rememberDays: config.rememberDays, shortHours: config.shortSessionHours, streamEveryMs: config.streamEveryMs,

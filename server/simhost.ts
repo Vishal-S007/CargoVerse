@@ -1,7 +1,12 @@
 // Runs the shared operations simulation on the server, persists every change to
 // the database, turns floor events into staff tasks, and serves live snapshots.
-import type { WorldState, FacilityId } from '../src/data/types';
-import type { SimControl, DbLiveStatus, DbCommit } from '../src/api/types';
+import type { WorldState, FacilityId, EntityRef } from '../src/data/types';
+import type { SimControl, DbLiveStatus, DbCommit, ExternalCommand, SqlFeedItem, RowHistory, RowVersion } from '../src/api/types';
+import { captureFrame, type TimeFrame } from '../src/data/timeframe';
+import { portLog } from '../src/sim/port';
+import { retailLog } from '../src/sim/retail';
+import { PARK_BUILDINGS } from '../src/data/park';
+import { AppError } from './db/repo';
 import { stepWorld, syncPoses, setSimSink, type SimOp } from '../src/sim/engine';
 import { SKUS } from '../src/data/seed';
 import type { Repo, StockOp, EventOp, GateOp, BoxOp, CallOp, PersistBatch } from './db/repo';
@@ -12,7 +17,14 @@ export class SimHost {
   world!: WorldState;
   control: SimControl = { paused: false, speed: 1 };
   operators: Record<string, number> = {};
-  versions = { tasks: 1, audit: 1, world: 1, gate: 1 };
+  versions = { tasks: 1, audit: 1, world: 1, gate: 1, park: 1 };
+
+  /** Database Lab: changes made outside the server and applied to the city (newest last). */
+  readonly feed: SqlFeedItem[] = [];
+  /** Time machine without Oracle Flashback: a frame every flush, for the last `historyS` seconds. */
+  readonly frames: TimeFrame[] = [];
+  private pollTimer: NodeJS.Timeout | null = null;
+  private polling = false;
 
   private stock: StockOp[] = [];
   private events: EventOp[] = [];
@@ -31,7 +43,7 @@ export class SimHost {
   db: DbLiveStatus;
   readonly commits: DbCommit[] = [];
 
-  constructor(private repo: Repo, private persistEveryMs: number) {
+  constructor(private repo: Repo, private persistEveryMs: number, private historyS = 600) {
     this.db = {
       engine: repo.kind, commits: 0, failures: 0, rowsWritten: 0, lastCommitAt: null, lastCommitMs: 0, lastRows: 0,
       lastTables: {}, lastError: null, lastErrorAt: null,
@@ -75,6 +87,7 @@ export class SimHost {
     this.last = performance.now();
     this.tickTimer = setInterval(() => this.tick(), 50);
     this.flushTimer = setInterval(() => { void this.flush(); }, this.persistEveryMs);
+    this.pollTimer = setInterval(() => { void this.pollCommands(); }, 1000);
     // make sure work already in progress at start-up has a task for its operator
     for (const t of Object.values(this.world.trucks)) {
       if (t.phase === 'working' && t.forkliftId) this.ops.push({ k: 'assigned', forkliftId: t.forkliftId, truckId: t.id });
@@ -84,6 +97,7 @@ export class SimHost {
   async stop(): Promise<void> {
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
     setSimSink(null);
     await this.flush();
   }
@@ -218,7 +232,9 @@ export class SimHost {
       for (const [key, v] of this.saved) if ((key.startsWith('shipment:') || key.startsWith('order:')) && !next.has(key)) next.set(key, v);
       const t0 = performance.now();
       try {
-        await this.repo.persist(batch);
+        const skipped = await this.repo.persist(batch);
+        // rows locked by another session were not written: forget them so the next flush tries again
+        if (skipped) for (const key of skipped) next.delete(key);
         this.saved = next;
         this.recordCommit(batch, Math.round((performance.now() - t0) * 10) / 10);
       } catch (err) {
@@ -232,10 +248,190 @@ export class SimHost {
         console.error('[persist] failed:', (err as Error).message);
         return;
       }
+      this.frames.push(captureFrame(w));
+      const keep = Math.ceil(this.historyS / (this.persistEveryMs / 1000)) + 3;
+      if (this.frames.length > keep) this.frames.splice(0, this.frames.length - keep);
       await this.runAutomation();
     } finally {
       this.flushing = false;
     }
+  }
+
+  // ---------------------------------------------------------------- Database Lab: live control from SQL
+  /** Picks up changes made outside the server (SQL Developer, …) and applies them to the city. */
+  async pollCommands(): Promise<SqlFeedItem[]> {
+    if (this.polling || !this.world) return [];
+    this.polling = true;
+    const applied: SqlFeedItem[] = [];
+    try {
+      const cmds = await this.repo.pollCommands();
+      if (!cmds.length) return [];
+      const results: { id: number; status: 'APPLIED' | 'REJECTED'; message: string }[] = [];
+      for (const cmd of cmds) {
+        let r: { ok: boolean; message: string; ref: EntityRef | null };
+        try { r = this.applyCommand(cmd); } catch (e) { r = { ok: false, message: (e as Error).message, ref: null }; }
+        const item: SqlFeedItem = { ...cmd, status: r.ok ? 'APPLIED' : 'REJECTED', message: r.message, appliedAt: new Date().toISOString(), ref: r.ref };
+        applied.push(item);
+        results.push({ id: cmd.id, status: item.status, message: r.message });
+      }
+      this.feed.push(...applied);
+      if (this.feed.length > 50) this.feed.splice(0, this.feed.length - 50);
+      this.versions.world++;
+      await this.repo.ackCommands(results);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg !== this.lastPollError) console.error('[lab] polling DB_COMMANDS failed:', msg);
+      this.lastPollError = msg;
+    } finally {
+      this.polling = false;
+    }
+    return applied;
+  }
+  private lastPollError = '';
+
+  /** Forget what was last written for a row, so the next flush writes the city's value again. */
+  private invalidate(kind: string, id: string): void { this.saved.delete(`${kind}:${id}`); }
+
+  private applyCommand(cmd: ExternalCommand): { ok: boolean; message: string; ref: EntityRef | null } {
+    const w = this.world;
+    const v = (cmd.newValue ?? '').trim();
+    const who = `${cmd.program || 'an outside client'} (${cmd.dbUser})`;
+    const ok = (message: string, ref: EntityRef | null) => ({ ok: true, message, ref });
+    const no = (message: string, ref: EntityRef | null = null) => ({ ok: false, message, ref });
+    switch (cmd.table) {
+      case 'PORT_BERTHS': {
+        const b = w.port.berths[cmd.key];
+        if (!b) return no(`No berth ${cmd.key} in the city`);
+        const open = v === 'Y';
+        const ref: EntityRef = { kind: 'berth', id: b.id };
+        if (b.open === open) return ok(`${b.name} was already ${open ? 'open' : 'closed'}`, ref);
+        if (!open && !Object.values(w.port.berths).some((x) => x.id !== b.id && x.open)) {
+          this.invalidate('berth', b.id);
+          return no(`${b.name} kept open: at least one berth must stay open`, ref);
+        }
+        b.open = open;
+        portLog(w, `${b.name} ${open ? 'reopened' : 'closed to new arrivals'} from ${who}`, ref);
+        return ok(`${b.name} ${open ? 'reopened — ships can be assigned to it again' : 'closed to new arrivals — the ship alongside finishes, the next waits at anchor'}`, ref);
+      }
+      case 'VESSELS': {
+        const s = w.port.vessels[cmd.key];
+        if (!s) return no(`No vessel ${cmd.key} in the city`);
+        const hold = v === 'Y';
+        const ref: EntityRef = { kind: 'vessel', id: s.id };
+        if (s.hold === hold) return ok(`${s.name} was already ${hold ? 'on hold' : 'released'}`, ref);
+        s.hold = hold;
+        portLog(w, `${s.name} ${hold ? 'held' : 'released'} from ${who}`, ref);
+        return ok(`${s.name} ${hold ? 'put on hold — it stays where it is' : 'released — it carries on'}`, ref);
+      }
+      case 'STORE_STOCK': {
+        const [storeId, skuId] = cmd.key.split(':');
+        const st = w.retail.stores[storeId];
+        const line = st?.lines.find((l) => l.skuId === skuId);
+        if (!st || !line) return no(`Store ${storeId} has no shelf for ${skuId}`);
+        const n = Math.max(0, Math.min(999999, Math.round(Number(v))));
+        if (!Number.isFinite(n)) return no(`Not a number: ${v}`);
+        line.units = n;
+        const ref: EntityRef = { kind: 'store', id: st.id };
+        const name = SKUS[skuId]?.name ?? skuId;
+        retailLog(w, `${st.name}: ${name} shelf set to ${n} from ${who}`, ref);
+        return ok(`${st.name}: ${name} shelf now ${n} units${n <= line.reorderAt ? ` — at or below the reorder line (${line.reorderAt}), so the store orders a restock and a van is sent` : ''}`, ref);
+      }
+      case 'FORKLIFTS': {
+        const f = w.forklifts[cmd.key];
+        if (!f) return no(`No forklift ${cmd.key}`);
+        const pct = Math.max(0, Math.min(100, Number(v)));
+        if (!Number.isFinite(pct)) return no(`Not a number: ${v}`);
+        f.battery = pct;
+        const ref: EntityRef = { kind: 'forklift', id: f.id };
+        return ok(`${f.id} battery set to ${Math.round(pct)}%${pct < 25 ? ' — it finishes its current move and drives to its charger' : pct < 30 ? ' — it will not start new work until it has charged' : ''}`, ref);
+      }
+      case 'SIM_STATE': {
+        if (cmd.column === 'PAUSED') {
+          const paused = v === 'Y';
+          this.setControl({ ...this.control, paused });
+          return ok(`Operations ${paused ? 'paused' : 'resumed'}`, null);
+        }
+        const speed = Number(v);
+        if (![1, 2, 4].includes(speed)) return no(`Speed must be 1, 2 or 4 (got ${v})`);
+        this.setControl({ ...this.control, speed });
+        return ok(`Operations speed set to ${speed}×`, null);
+      }
+      case 'PARK_BUILDINGS': {
+        this.versions.park++;
+        const name = PARK_BUILDINGS.find((b) => b.id === cmd.key)?.name ?? cmd.key;
+        return ok(`${name}: status ${cmd.oldValue ?? '?'} → ${v}`, { kind: 'building', id: cmd.key });
+      }
+      case 'TASKS': {
+        this.bump('tasks');
+        this.bump('audit');
+        return ok(cmd.column === 'CREATED' ? `Task #${cmd.key} created: ${v}` : `Task #${cmd.key}: ${cmd.oldValue ?? '?'} → ${v}`, null);
+      }
+      default:
+        return no(`Changes to ${cmd.table} are not applied to the city`);
+    }
+  }
+
+  // ---------------------------------------------------------------- Database Lab: time machine
+  /** The city as it was `secondsAgo` seconds ago: Oracle Flashback Query, or the in-memory history without Oracle. */
+  async timeFrame(secondsAgo: number, facilities: FacilityId[]): Promise<TimeFrame> {
+    let note: string | undefined;
+    if (this.repo.kind === 'oracle') {
+      try {
+        return await this.repo.flashback(secondsAgo, facilities);
+      } catch (e) {
+        note = `Oracle Flashback could not read that moment (${(e as Error).message}) — showing the server's in-memory history instead.`;
+      }
+    }
+    if (!this.frames.length) throw new AppError(409, note ?? 'No history yet — the server records the city every few seconds after it starts.');
+    const target = Date.now() - secondsAgo * 1000;
+    let best = this.frames[0];
+    for (const f of this.frames) if (Math.abs(Date.parse(f.at) - target) < Math.abs(Date.parse(best.at) - target)) best = f;
+    const set = new Set<string>(facilities);
+    const keep = <T>(rec: Record<string, T>, fac: (x: T, id: string) => string | undefined) =>
+      Object.fromEntries(Object.entries(rec).filter(([id, x]) => { const f = fac(x, id); return !f || set.has(f); }));
+    const w = this.world;
+    return {
+      ...best,
+      secondsAgo: Math.round((Date.now() - Date.parse(best.at)) / 1000),
+      trucks: keep(best.trucks, (_x, id) => w.trucks[id]?.facilityId),
+      forklifts: keep(best.forklifts, (_x, id) => w.forklifts[id]?.facilityId),
+      pallets: keep(best.pallets, (x) => x.facilityId),
+      docks: keep(best.docks, (_x, id) => w.docks[id]?.facilityId),
+      rows: {}, sql: [],
+      note: note ?? (this.repo.kind === 'oracle' ? undefined : 'Without Oracle the time machine uses the server\'s in-memory history (since the server started).'),
+    };
+  }
+
+  /** History of one row: Oracle Flashback Versions Query, or the in-memory history. */
+  async rowHistory(kind: string, id: string, seconds: number): Promise<RowHistory> {
+    let note: string | undefined;
+    if (this.repo.kind === 'oracle') {
+      try { return await this.repo.rowHistory(kind, id, seconds); } catch (e) { note = `Flashback Versions Query failed (${(e as Error).message}); showing the in-memory history.`; }
+    }
+    const pick: Record<string, { table: string; cols: string[]; get: (f: TimeFrame) => (string | number | null)[] | null }> = {
+      vessel: { table: 'VESSELS', cols: ['VESSEL_STATUS', 'BERTH_CODE', 'ON_HOLD', 'IMPORT_BOXES', 'DISCHARGED', 'LOADED'], get: (f) => { const x = f.vessels[id]; return x ? [x.status, x.berthId, x.hold ? 'Y' : 'N', x.importBoxes, x.discharged, x.loaded] : null; } },
+      berth: { table: 'PORT_BERTHS', cols: ['IS_OPEN', 'VESSEL_ID'], get: (f) => { const x = f.berths[id]; return x ? [x.open ? 'Y' : 'N', x.vesselId] : null; } },
+      crane: { table: 'QUAY_CRANES', cols: ['CRANE_PHASE', 'MOVES_TODAY'], get: (f) => { const x = f.cranes[id]; return x ? [x.phase.toUpperCase(), x.moves] : null; } },
+      truck: { table: 'TRUCKS', cols: ['STATUS', 'DOCK_ID', 'CARGO_PALLETS', 'TRADE_LANE'], get: (f) => { const x = f.trucks[id]; return x ? [x.phase.toUpperCase(), x.dockId, x.cargo, x.lane] : null; } },
+      forklift: { table: 'FORKLIFTS', cols: ['TASK_STATE', 'BATTERY_PCT', 'TRUCK_ID', 'MOVES_TODAY'], get: (f) => { const x = f.forklifts[id]; return x ? [x.task.toUpperCase(), Math.round(x.battery), x.truckId, x.moves] : null; } },
+      dock: { table: 'DOCKS', cols: ['TRUCK_ID', 'TRUCKS_TODAY'], get: (f) => { const x = f.docks[id]; return x ? [x.truckId, x.trucksToday] : null; } },
+      van: { table: 'DELIVERY_VANS', cols: ['VAN_STATUS', 'ORDER_ID', 'STORE_ID'], get: (f) => { const x = f.vans[id]; return x ? [x.status, x.orderId, x.storeId] : null; } },
+    };
+    const p = pick[kind];
+    if (!p) throw new AppError(404, `No row history for ${kind}`);
+    const since = Date.now() - seconds * 1000;
+    const entries: RowVersion[] = [];
+    for (const f of this.frames) {
+      if (Date.parse(f.at) < since) continue;
+      const vals = p.get(f);
+      if (!vals) continue;
+      const values = Object.fromEntries(p.cols.map((c, i) => [c, vals[i] ?? null]));
+      const last = entries[entries.length - 1];
+      if (last && JSON.stringify(last.values) === JSON.stringify(values)) { last.to = null; last.versions++; continue; }
+      if (last) last.to = f.at;
+      entries.push({ from: f.at, to: null, op: 'U', values, versions: 1 });
+    }
+    return { kind, id, table: p.table, columns: p.cols, source: 'memory', sql: null, entries: entries.slice(-60), note: note ?? 'Without Oracle this comes from the server\'s in-memory history.' };
   }
 
   // ---------------------------------------------------------------- task automation
@@ -325,8 +521,9 @@ export class SimHost {
         port: w.port, retail: w.retail,
       },
       control: this.control,
-      versions: { tasks: this.versions.tasks, audit: this.versions.audit, gate: this.versions.gate },
+      versions: { tasks: this.versions.tasks, audit: this.versions.audit, gate: this.versions.gate, park: this.versions.park },
       db: this.db,
+      lab: { feed: this.feed.slice(-8) },
     };
     const json = JSON.stringify(out);
     this.snapCache.set(key, { v, json });

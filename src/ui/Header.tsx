@@ -5,6 +5,7 @@ import { getWorld, useApp, signOut } from '../store';
 import { api } from '../api/client';
 import { search, fmtClock, facilityHeadline, type SearchResult } from './derive';
 import { LogoCube } from './icons';
+import { TimeMachineButton } from './Lab';
 
 function useDismiss<T extends HTMLElement>(open: boolean, close: () => void) {
   const ref = useRef<T>(null);
@@ -308,6 +309,7 @@ export function Header() {
       <div className="hdr-right">
         <FacilityPicker />
         <LiveClock />
+        <TimeMachineButton />
         <AskAiButton />
         <WorkButton />
         <Notifications />

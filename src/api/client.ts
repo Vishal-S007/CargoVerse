@@ -1,10 +1,12 @@
 // Browser client for the CargoVerse API.
+import type { TimeFrame } from '../data/timeframe';
 import type { FacilityId, EntityRef } from '../data/types';
 import type {
   SessionUser, Task, TaskUpdate, TaskStatus, AuditEntry, Employee, UserRecord, SimControl, KpiRow, WorkloadRow,
   LowStockRow, JobTitle, RoleInfo, Role, TaskType, Priority, ParkData, BuildingPatch, GateEntry, TradeRow,
   DbOverview, DbTableDetail, SqlResult, SqlActivity, SavedQuery, DbLive, DbLiveRow,
   ContainerMoveRow, VesselCallRow, StoreOrderRow,
+  LabStatus, SqlFeedItem, ExternalSqlResult, RowHistory, VpdReport, LabRun, LabScenario,
 } from './types';
 import type { Vessel, Berth, StoreOrder } from '../data/types';
 import type { ParkBuilding } from '../data/park';
@@ -105,6 +107,14 @@ export const api = {
   dbLive: () => call<DbLive>('GET', '/db/live'),
   dbRow: (kind: string, id: string) => call<DbLiveRow>('GET', `/db/row/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`),
   dbActivity: (all: boolean) => call<(SqlActivity & { source: string })[]>('GET', `/db/activity${qs({ source: all ? 'all' : undefined })}`),
+
+  labStatus: () => call<LabStatus>('GET', '/lab/status'),
+  labFeed: () => call<SqlFeedItem[]>('GET', '/lab/feed'),
+  labSql: (sql: string) => call<ExternalSqlResult & { applied: SqlFeedItem[] }>('POST', '/lab/sql', { sql }),
+  labFrame: (ago: number) => call<TimeFrame>('GET', `/lab/frame${qs({ ago })}`),
+  labHistory: (kind: string, id: string, window?: number) => call<RowHistory>('GET', `/lab/history/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${qs({ window })}`),
+  labVpd: () => call<VpdReport>('GET', '/lab/vpd'),
+  labRun: (scenario: LabScenario) => call<LabRun>('POST', '/lab/concurrency', { scenario }),
 
   alerts: (facility?: FacilityId) => call<Alert[]>('GET', `/alerts${qs({ facility })}`),
   alertTask: (alertId: string, assigneeId?: number) => call<Task>('POST', '/alerts/task', { alertId, assigneeId }),

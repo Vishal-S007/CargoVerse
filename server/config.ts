@@ -30,6 +30,13 @@ export const config = {
     password: env('ORACLE_PASSWORD', 'WareTrack_2026'),
     connectString: env('ORACLE_CONNECT_STRING', 'localhost:1521/FREEPDB1'),
   },
+  /** Database Lab: the demo database accounts (row-level security) and the privileged setup step. */
+  lab: {
+    accountPassword: env('LAB_DB_PASSWORD', 'Cargo_2026'),
+    adminPassword: env('ORACLE_ADMIN_PASSWORD', 'Oracle_Admin_2026'), // SYS / SYSTEM password (docker-compose.yml)
+    container: env('ORACLE_CONTAINER', 'waretrack-oracle'),
+    flashbackMaxS: Number(env('FLASHBACK_MAX_S', '600')),
+  },
   memoryFile: env('MEMORY_DB_FILE', resolve(process.cwd(), '.data', 'memory-db.json')),
   sessionSecret: env('SESSION_SECRET', '') || randomBytes(32).toString('hex'),
   rememberDays: Number(env('SESSION_DAYS', '30')),

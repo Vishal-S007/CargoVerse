@@ -13,6 +13,7 @@ import type { BuildingStatus } from '../src/data/park';
 import { placeOrder, hasOpenOrder, chooseSupplier } from '../src/sim/retail';
 import { portLog } from '../src/sim/port';
 import { computeAlerts, taskFromAlert, runAssistant, assistantConfigured, type ChatTurn } from './agent';
+import type { LabScenario, LabStatus } from '../src/api/types';
 
 const FACILITIES: FacilityId[] = ['WH-01', 'WH-02', 'WH-04'];
 const TASK_TYPES: TaskType[] = ['UNLOAD', 'LOAD', 'PUTAWAY', 'CYCLE_COUNT', 'MAINTENANCE', 'DOCK_CHECK', 'OTHER'];
@@ -410,6 +411,45 @@ export function buildRouter(repo: Repo, host: SimHost, opts: Opts): Router {
     if (fac && !ctx.user!.facilities.includes(fac as FacilityId)) throw new AppError(403, `You do not have access to ${String(fac)}`);
     return row;
   });
+
+  // ------------------------------------------------------------ Database Lab
+  // Live control from SQL, the time machine (Oracle Flashback), row-level security and the concurrency lab.
+  router.add('GET', '/api/lab/status', async (ctx): Promise<LabStatus> => {
+    const info = await repo.labInfo();
+    const cs = config.oracle.connectString;
+    const m = /^([^:/]+)(?::(\d+))?\/([^?]+)/.exec(cs);
+    return {
+      engine: repo.kind, control: info.control, flashback: repo.kind === 'oracle', flashbackMaxS: config.lab.flashbackMaxS,
+      historyFrames: host.frames.length, oldestFrameAt: host.frames[0]?.at ?? null, concurrency: info.concurrency, vpd: info.vpd,
+      connect: { host: m?.[1] ?? 'localhost', port: Number(m?.[2] ?? 1521), service: m?.[3] ?? 'FREEPDB1', schema: config.oracle.user },
+      accountPassword: ctx.user!.permissions.includes('RUN_SQL') ? config.lab.accountPassword : null,
+    };
+  });
+  router.add('GET', '/api/lab/feed', () => host.feed.slice().reverse(), { perm: 'VIEW_DATABASE' });
+  router.add('POST', '/api/lab/sql', async (ctx) => {
+    const sql = str(ctx.body?.sql, 'SQL statement', { max: 4000 });
+    const result = await repo.runExternalSql(ctx.user!.userId, sql);
+    const applied = await host.pollCommands(); // apply straight away rather than at the next poll
+    host.bump('audit');
+    return { ...result, applied };
+  }, { perm: 'RUN_SQL' });
+  router.add('GET', '/api/lab/frame', async (ctx) => {
+    const ago = int(ctx.query.get('ago') ?? '60', 'ago', { min: 1, max: config.lab.flashbackMaxS })!;
+    return host.timeFrame(ago, ctx.user!.facilities);
+  });
+  router.add('GET', '/api/lab/history/:kind/:id', async (ctx) => {
+    const kind = oneOf(String(ctx.params.kind), 'kind', ['vessel', 'berth', 'crane', 'truck', 'forklift', 'dock', 'van']);
+    const id = str(ctx.params.id, 'id', { max: 40 });
+    if (kind === 'truck' && !ctx.user!.facilities.includes(host.world.trucks[id]?.facilityId as FacilityId)) throw new AppError(403, 'You do not have access to that site');
+    if (kind === 'forklift' && !ctx.user!.facilities.includes(host.world.forklifts[id]?.facilityId as FacilityId)) throw new AppError(403, 'You do not have access to that site');
+    if (kind === 'dock' && !ctx.user!.facilities.includes(host.world.docks[id]?.facilityId as FacilityId)) throw new AppError(403, 'You do not have access to that site');
+    return host.rowHistory(kind, id, int(ctx.query.get('window') ?? String(config.lab.flashbackMaxS), 'window', { min: 10, max: config.lab.flashbackMaxS })!);
+  });
+  router.add('GET', '/api/lab/vpd', () => repo.vpdReport(), { perm: 'VIEW_DATABASE' });
+  router.add('POST', '/api/lab/concurrency', async (ctx) => {
+    const scenario = oneOf<LabScenario>(ctx.body?.scenario, 'scenario', ['double_booking', 'lost_update', 'safe_update', 'deadlock']);
+    return repo.runLab(ctx.user!.userId, scenario);
+  }, { perm: 'VIEW_DATABASE' });
 
   // ------------------------------------------------------------ AI agents: exception watcher + assistant
   router.add('GET', '/api/alerts', async (ctx) => computeAlerts(host.world, repo, facilityScope(ctx.user!, ctx.query.get('facility'))), { perm: 'VIEW_TEAM' });

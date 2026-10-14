@@ -162,6 +162,9 @@ export const TABLE_GROUPS: Record<string, string> = {
   CARRIERS: 'Fleet & shipments', DRIVERS: 'Fleet & shipments', TRUCKS: 'Fleet & shipments', SHIPMENTS: 'Fleet & shipments', FORKLIFTS: 'Fleet & shipments',
   TASKS: 'Work', TASK_UPDATES: 'Work',
   OPERATION_EVENTS: 'History', AUDIT_LOG: 'History', SIM_STATE: 'History',
+  SHIPPING_LINES: 'Port', PORT_BERTHS: 'Port', VESSELS: 'Port', QUAY_CRANES: 'Port', VESSEL_CALLS: 'Port', YARD_BLOCKS: 'Port', CONTAINER_MOVES: 'Port', YARD_CONTAINERS: 'Port',
+  STORES: 'Stores', STORE_STOCK: 'Stores', DELIVERY_VANS: 'Stores', STORE_ORDERS: 'Stores', STORE_ORDER_HISTORY: 'Stores',
+  DB_COMMANDS: 'Database Lab', DOCK_BOOKINGS: 'Database Lab', LAB_STOCK: 'Database Lab', DB_ACCOUNTS: 'Security',
   PARK_COMPANIES: 'Logistics park', PARK_BUILDINGS: 'Logistics park', PARK_ROUTES: 'Logistics park', PARK_VEHICLES: 'Logistics park', PARK_GATES: 'Logistics park', PARK_GATE_LOG: 'Logistics park',
 };
 

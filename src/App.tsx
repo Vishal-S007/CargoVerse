@@ -7,6 +7,7 @@ import { KpiCards, SceneControls, InfoPanel, ShipmentTracking, FleetList, Labels
 import { LoginPage } from './ui/Login';
 import { Workspace, Toast } from './ui/Workspace';
 import { MapLegend } from './ui/ParkPanels';
+import { TimeBar, SqlToasts } from './ui/Lab';
 
 class SceneBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -32,6 +33,8 @@ export default function App() {
   const ready = useApp((s) => s.ready);
   const mode = useApp((s) => s.mode);
   const showPanels = useApp((s) => s.showPanels);
+  const timeOpen = useApp((s) => s.timeTravel.open);
+  const past = useApp((s) => s.timeTravel.ago !== null);
   const [boot, setBoot] = useState<Boot>('checking');
   const [serverDown, setServerDown] = useState(false);
   const [db, setDb] = useState<'oracle' | 'memory' | null>(null);
@@ -99,7 +102,7 @@ export default function App() {
     );
   }
   return (
-    <div className="app">
+    <div className={`app ${past ? 'time-travel' : ''}`}>
       <div className="scene">
         {ready && (gl ? <SceneBoundary><WarehouseScene /></SceneBoundary> : <SceneFallback />)}
       </div>
@@ -110,13 +113,14 @@ export default function App() {
           <SceneControls />
           {showPanels ? (
             <>
-              <KpiCards />
+              {timeOpen ? <TimeBar /> : <KpiCards />}
               <InfoPanel />
               <ShipmentTracking />
               <FleetList />
             </>
-          ) : <MapLegend />}
+          ) : <>{timeOpen && <TimeBar />}<MapLegend /></>}
           <Workspace />
+          <SqlToasts />
         </>
       )}
       {mode === 'offline' && <div className="offline-banner">Offline demo — no server connection, nothing is saved to the database</div>}

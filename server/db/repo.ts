@@ -9,7 +9,9 @@ import type {
   SimControl, KpiRow, WorkloadRow, LowStockRow, Role, JobTitle, RoleInfo,
   ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail, SqlResult, SqlActivity, DbLiveRow,
   ContainerMoveRow, VesselCallRow, StoreOrderRow,
+  ExternalCommand, ExternalSqlResult, LabRun, LabScenario, RowHistory, VpdReport,
 } from '../../src/api/types';
+import type { TimeFrame } from '../../src/data/timeframe';
 import type { SimOp } from '../../src/sim/engine';
 
 export class AppError extends Error {
@@ -107,7 +109,8 @@ export interface Repo {
 
   // operations state
   loadWorld(): Promise<{ world: WorldState; control: SimControl; operators: Record<string, number> }>;
-  persist(batch: PersistBatch): Promise<void>;
+  /** Writes one batch. Returns the keys (kind:id) of rows it had to skip because another session holds a lock on them. */
+  persist(batch: PersistBatch): Promise<string[] | void>;
   saveControl(control: SimControl, userId: number | null): Promise<void>;
 
   // authentication & sessions
@@ -167,6 +170,20 @@ export interface Repo {
   liveCounts(tables: string[]): Promise<Record<string, number>>;
   /** One row read live by primary key. Table and key column come from LIVE_ROW_TABLES, never from the client. */
   liveRow(table: string, key: string, id: string): Promise<DbLiveRow | null>;
+
+  // Database Lab (06_lab.sql, 08_security.sql)
+  labInfo(): Promise<{ control: boolean; concurrency: boolean; vpd: { installed: boolean; accounts: string[]; tables: string[]; reason: string | null } }>;
+  /** Changes made outside the server (queued by triggers), oldest first. */
+  pollCommands(): Promise<ExternalCommand[]>;
+  ackCommands(results: { id: number; status: 'APPLIED' | 'REJECTED'; message: string }[]): Promise<void>;
+  /** Runs one UPDATE / INSERT / DELETE as an outside client would (so the triggers queue it). */
+  runExternalSql(userId: number, sql: string): Promise<ExternalSqlResult>;
+  /** Oracle Flashback Query of the moving parts of the city. Throws AppError 501 without Oracle. */
+  flashback(secondsAgo: number, facilities: FacilityId[]): Promise<TimeFrame>;
+  /** Flashback Versions Query of one row. Throws AppError 501 without Oracle. */
+  rowHistory(kind: string, id: string, seconds: number): Promise<RowHistory>;
+  vpdReport(): Promise<VpdReport>;
+  runLab(userId: number, scenario: LabScenario): Promise<LabRun>;
 }
 
 export type SqlSource = 'api' | 'sim' | 'live';

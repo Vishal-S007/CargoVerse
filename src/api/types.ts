@@ -1,5 +1,5 @@
 // Types shared by the browser client and the Node API server.
-import type { FacilityId } from '../data/types';
+import type { FacilityId, EntityRef } from '../data/types';
 
 export type Role = 'ADMIN' | 'MANAGER' | 'OPERATOR';
 
@@ -273,3 +273,83 @@ export interface StoreOrderRow {
   dispatchedAt: string | null;
   deliveredAt: string | null;
 }
+
+// ---------------------------------------------------------------- Database Lab
+/** A change made outside the CargoVerse server, queued by a trigger in DB_COMMANDS. */
+export interface ExternalCommand {
+  id: number;
+  table: 'PORT_BERTHS' | 'VESSELS' | 'STORE_STOCK' | 'FORKLIFTS' | 'SIM_STATE' | 'PARK_BUILDINGS' | 'TASKS';
+  key: string;
+  column: string;
+  oldValue: string | null;
+  newValue: string | null;
+  dbUser: string;
+  program: string | null;
+  host: string | null;
+  at: string; // when the row was changed (ISO)
+}
+/** The same change after the server applied it to the live city. */
+export interface SqlFeedItem extends ExternalCommand {
+  status: 'APPLIED' | 'REJECTED';
+  message: string;
+  appliedAt: string;
+  ref: EntityRef | null;
+}
+
+export interface LabStatus {
+  engine: 'oracle' | 'memory';
+  /** Live control from SQL: the DB_COMMANDS queue and its triggers exist. */
+  control: boolean;
+  flashback: boolean;
+  flashbackMaxS: number;
+  historyFrames: number;
+  oldestFrameAt: string | null;
+  concurrency: boolean;
+  vpd: { installed: boolean; accounts: string[]; tables: string[]; reason: string | null };
+  connect: { host: string; port: number; service: string; schema: string };
+  /** Password of the demo database accounts (shown to administrators only). */
+  accountPassword: string | null;
+}
+
+export interface RowVersion {
+  from: string | null; // when this version became current (ISO); null = before the window
+  to: string | null;   // when it was replaced; null = still current
+  op: 'I' | 'U' | 'D' | null;
+  values: Record<string, string | number | null>;
+  versions: number;    // how many raw row versions this entry covers (consecutive ones with the same values)
+}
+export interface RowHistory { kind: string; id: string; table: string; columns: string[]; source: 'flashback' | 'memory'; sql: string | null; entries: RowVersion[]; note?: string }
+
+export interface VpdAccount {
+  account: string;
+  appUser: string;
+  role: string;
+  sites: string[];          // what the policy allows
+  predicate: string | null; // the WHERE clause Oracle adds (null = no filter)
+  counts: Record<string, number>;
+  sitesSeen: string[];      // DISTINCT facility_id actually returned to that account
+  error?: string;
+  ms: number;
+}
+export interface VpdReport { source: 'oracle' | 'simulated'; tables: string[]; owner: Record<string, number>; accounts: VpdAccount[]; at: string; sql: string }
+
+export type LabScenario = 'double_booking' | 'lost_update' | 'safe_update' | 'deadlock';
+export interface LabStep {
+  session: 'A' | 'B' | 'DB';
+  t: number;  // ms from the start of the run
+  end?: number; // for waits: when the wait ended
+  kind: 'sql' | 'ok' | 'error' | 'wait' | 'info' | 'commit' | 'rollback';
+  text: string;
+  sql?: string;
+}
+export interface LabRun {
+  scenario: LabScenario;
+  title: string;
+  source: 'oracle' | 'simulated';
+  steps: LabStep[];
+  verdict: 'protected' | 'anomaly' | 'detected';
+  outcome: string;
+  final: { label: string; value: string }[];
+  ms: number;
+}
+export interface ExternalSqlResult { statement: string; rowsAffected: number; ms: number; queued: number; source: 'oracle' | 'simulated' }

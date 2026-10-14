@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   X, Plus, RefreshCw, ChevronDown, ChevronRight, Crosshair, Play, Pause, CheckCircle2, Ban, UserRound, History,
-  ClipboardList, Users, BarChart3, ShieldCheck, Truck as TruckIcon, Clock3, AlertTriangle, KeyRound, Sparkles, ArrowDownUp, Building2, Database, Anchor,
+  ClipboardList, Users, BarChart3, ShieldCheck, Truck as TruckIcon, Clock3, AlertTriangle, KeyRound, Sparkles, ArrowDownUp, Building2, Database, Anchor, FlaskConical,
 } from 'lucide-react';
 import { AlertsTab, AssistantTab } from './Agents';
 import { TradeTab, ParkTab, DatabaseTab } from './DataTabs';
 import { PortTab } from './PortTab';
+import { DbLabTab } from './Lab';
 import { carrierName } from '../data/seed';
 import type { FacilityId, EntityRef } from '../data/types';
 import type {
@@ -29,7 +30,7 @@ const ACTION_LABEL: Record<string, string> = {
   TASK_ASSIGNED: 'Assigned task', TASK_PRIORITY: 'Task priority', USER_CREATED: 'Created user', USER_UPDATED: 'Updated user',
   USER_DELETED: 'Deleted user', ACCESS_GRANTED: 'Granted access', ACCESS_REVOKED: 'Revoked access', EMPLOYEE_ADDED: 'Added employee',
   EMPLOYEE_UPDATED: 'Updated employee', OPS_PAUSED: 'Paused operations', OPS_RESUMED: 'Resumed operations', OPS_SPEED: 'Changed speed',
-  BUILDING_UPDATED: 'Updated building', SQL_QUERY: 'Ran SQL query',
+  BUILDING_UPDATED: 'Updated building', SQL_QUERY: 'Ran SQL query', SQL_DML: 'Changed data with SQL',
 };
 
 const AUTO_NOTES = new Set(['Task created', 'Created automatically by operations']);
@@ -99,12 +100,13 @@ export function Workspace() {
     { id: 'reports', label: 'Reports', icon: <BarChart3 size={15} />, show: has('VIEW_REPORTS') },
     { id: 'park', label: 'Park', icon: <Building2 size={15} />, show: true },
     { id: 'database', label: 'Database', icon: <Database size={15} />, show: has('VIEW_DATABASE') },
+    { id: 'lab', label: 'DB Lab', icon: <FlaskConical size={15} />, show: has('VIEW_DATABASE') },
     { id: 'users', label: 'Users', icon: <ShieldCheck size={15} />, show: has('MANAGE_USERS') },
   ];
   const visible = tabs.filter((t) => t.show);
   const current = visible.some((t) => t.id === tab) ? tab : 'tasks';
   return (
-    <aside className={`work ${current === 'database' || current === 'trade' || current === 'park' || current === 'port' ? 'wide' : ''}`} role="dialog" aria-label="Work and activity">
+    <aside className={`work ${current === 'database' || current === 'lab' || current === 'trade' || current === 'park' || current === 'port' ? 'wide' : ''}`} role="dialog" aria-label="Work and activity">
       <div className="work-head">
         <div>
           <div className="work-title">{user.role === 'OPERATOR' ? 'My work' : user.role === 'ADMIN' ? 'Administration' : 'Operations management'}</div>
@@ -131,6 +133,7 @@ export function Workspace() {
         {current === 'park' && <ParkTab />}
         {current === 'port' && <PortTab />}
         {current === 'database' && <DatabaseTab />}
+        {current === 'lab' && <DbLabTab />}
       </div>
     </aside>
   );

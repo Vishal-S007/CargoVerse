@@ -1,5 +1,7 @@
 --------------------------------------------------------------------------------
--- CargoVerse — remove every object created by 01–04 (run as WARETRACK).
+-- CargoVerse — remove every object created by 01–08 (run as WARETRACK).
+-- Row-level security policies are dropped together with their tables; the
+-- demonstration accounts (CV_*) belong to the database and are kept.
 -- Safe to run on an empty schema: missing objects are skipped.
 --------------------------------------------------------------------------------
 BEGIN
@@ -10,7 +12,8 @@ BEGIN
     EXECUTE IMMEDIATE 'DROP PACKAGE ' || p.object_name;
   END LOOP;
   FOR t IN (SELECT table_name FROM user_tables
-             WHERE table_name IN ('STORE_ORDER_HISTORY', 'STORE_ORDERS', 'DELIVERY_VANS', 'STORE_STOCK', 'STORES',
+             WHERE table_name IN ('DB_ACCOUNTS', 'DB_COMMANDS', 'DOCK_BOOKINGS', 'LAB_STOCK',
+                                  'STORE_ORDER_HISTORY', 'STORE_ORDERS', 'DELIVERY_VANS', 'STORE_STOCK', 'STORES',
                                   'YARD_CONTAINERS', 'CONTAINER_MOVES', 'YARD_BLOCKS', 'VESSEL_CALLS', 'QUAY_CRANES',
                                   'VESSELS', 'PORT_BERTHS', 'SHIPPING_LINES',
                                   'PARK_GATE_LOG', 'PARK_GATES', 'PARK_VEHICLES', 'PARK_ROUTES', 'PARK_BUILDINGS', 'PARK_COMPANIES',

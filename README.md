@@ -13,36 +13,23 @@ A warehouse and logistics operations system:
   warehouses, and CargoVerse delivery vans load at the sites, drive to the stores and unload;
 - sign-in with three access roles (Administrator, Operations Manager, Operator);
 - work assigned to staff according to their job;
-- a permanent audit trail. Everything is stored in **Oracle Database**.
+- a permanent audit trail. Everything is stored in **Oracle Database**;
+- a **Database Lab** that shows what only a real database can do: drive the 3D city with an `UPDATE`
+  typed in SQL Developer, rewind the whole city with **Oracle Flashback**, give every operator a database
+  account that **Oracle itself** limits to their sites (**Virtual Private Database**), and replay
+  **concurrency** problems — double booking, lost update, deadlock — with two real sessions.
 
 ```
 Browser (React + Three.js)  ──HTTP / live stream──▶  Node API server  ──node-oracledb──▶  Oracle Database
    login · 3D yard · tasks                          auth · roles · live ops              tables · PL/SQL · triggers · views
 ```
 
-![CargoVerse: the live 3D city with the port, logistics park, warehouses and town](docs/screenshots/city.jpg)
-
-## Screenshots
-
-| Container port | Warehouse |
-| --- | --- |
-| ![Ships, quay cranes and the container yard](docs/screenshots/port.jpg) | ![Dock bays, trucks, forklifts and stock](docs/screenshots/warehouse.jpg) |
-| **Stores** | **Housing estate** |
-| ![A supermarket's shelf stock and automatic reorders](docs/screenshots/store.jpg) | ![Houses, a school and street life](docs/screenshots/houses.jpg) |
-
-## Project documents
-
-- [Project synopsis (Word)](docs/CargoVerse-Synopsis.docx)
-- [Presentation, 17 slides with speaker notes (PowerPoint)](docs/CargoVerse-Presentation.pptx)
-- [Database design: ER diagram, normalisation, constraints, PL/SQL API](docs/DATABASE.md)
-
 ## Quick start on a Mac (Apple Silicon or Intel)
 
 You need Node.js 18+ and Docker Desktop (or Colima) for the Oracle container.
 
 ```bash
-git clone https://github.com/Vishal-S007/CargoVerse.git
-cd CargoVerse
+git clone https://github.com/Vishal-S007/CargoVerse.git && cd CargoVerse
 npm install                 # installs React, Three.js, Vite and the Oracle driver
 cp .env.example .env        # then set SESSION_SECRET to any long random text
 npm run db:up               # starts Oracle Database Free in Docker (first start: ~1–2 min)
@@ -81,6 +68,22 @@ Change these passwords (Users tab, signed in as admin) before showing the system
   constraints and rows, and the views, triggers and packages. Administrators also get a read-only
   **SQL console** with the example queries from `05_reports.sql`, and a log of the SQL the server runs.
 
+## Database Lab
+
+**Work → DB Lab** (administrators and managers) and the clock button in the header.
+`npm run db:setup` installs it; on a database you already have, `npm run db:lab` adds it **without
+touching your data**. Check it end to end with `npm run db:selftest` (15 checks, PASS/FAIL).
+A 5-minute presentation script is in [`docs/DEMO.md`](docs/DEMO.md).
+
+| Feature | What you see | What Oracle does |
+| --- | --- | --- |
+| **Control the city from SQL** | Run `UPDATE port_berths SET is_open = 'N' WHERE berth_code = 'B1'; COMMIT;` in SQL Developer — within a second the berth closes in 3D and the next ship waits at anchor. Shelves, ships, forklifts, buildings, tasks and the simulation speed all react. | Row triggers (`TRG_EXT_*`) recognise changes not made by the server (`SYS_CONTEXT('USERENV','MODULE')`) and queue them in `DB_COMMANDS`; check constraints and triggers still reject bad values. |
+| **Time machine** | Drag a slider up to 10 minutes back: every truck, ship, forklift, pallet and van returns to where it was. Replay at 4×. Row history for any ship, truck or forklift. | **Flashback Query** (`SELECT … AS OF SCN`) over 12 tables, and **Flashback Versions Query** (`VERSIONS BETWEEN TIMESTAMP`). No history tables. |
+| **Row-level security** | Sign in to SQL Developer as `cv_zoe`, `cv_alex`, `cv_meera` or `cv_admin` (password `Cargo_2026`) and run the same `SELECT` — each sees only their own sites. | A **VPD policy** (`DBMS_RLS`, function `WT_SECURITY.SITE_FILTER`) on 15 tables adds `WHERE facility_id IN (…)` from the user's site access. It cannot be bypassed with a cleverer query. |
+| **Concurrency lab** | Four experiments on a timeline: double booking (prevented), lost update (shown), the `FOR UPDATE` fix, and a deadlock. | Two real sessions; row locks, `SELECT … FOR UPDATE WAIT`, a unique key, and `ORA-00060` deadlock detection. |
+
+Without Oracle (`npm run dev:memory`) every tab still works with simulated results, clearly labelled.
+
 ## AI agents
 
 Two agents sit in the **Work** panel (and the ✦ button in the header):
@@ -104,6 +107,8 @@ Two agents sit in the **Work** panel (and the ✦ button in the header):
 | `npm run dev:memory` | Run without Oracle (in-memory store saved to `.data/`), handy for UI work |
 | `npm run build` then `npm start` | Production build; the API also serves the website on http://localhost:4000 |
 | `npm run typecheck` | TypeScript checks for the website and the server |
+| `npm run db:lab` | Install or update the Database Lab on the existing schema (keeps your data) |
+| `npm run db:selftest` | Check the four Database Lab features against Oracle and print PASS/FAIL |
 | `npm run db:reset` | Drop and recreate the schema with fresh seed data (**deletes all data**) |
 | `npm run db:gen-seed` | Regenerate `db/oracle/04_seed.sql` from the app's seed data |
 | `npm run db:down` | Stop the Oracle container (data is kept in a Docker volume) |
@@ -116,10 +121,13 @@ The scripts also run by hand in SQL Developer in order 01 → 04.
 
 ```
 db/oracle/        SQL scripts: schema, PL/SQL packages & triggers, views, seed, sample reports
-docs/             DATABASE.md (ER diagram, normalization, constraints, PL/SQL API), synopsis, slides, screenshots
+docs/DATABASE.md  ER diagram, normalization, constraints, PL/SQL API, roles & rights, Database Lab
+docs/DEMO.md      5-minute demonstration script
 server/           Node API: auth (scrypt + sessions), role checks, Oracle repository, live operations host
   db/oracle.ts    Oracle implementation (node-oracledb Thin mode — no Oracle client install needed)
+  db/oracle-lab.ts Database Lab on Oracle: SQL control queue, Flashback, VPD report, concurrency runs
   db/memory.ts    Same rules in memory, for development/tests without a database
+  db/selftest.ts  npm run db:selftest
 src/              Website: login, 3D scene, dashboard panels, Work panel (tasks, activity, team, reports, users)
 ```
 

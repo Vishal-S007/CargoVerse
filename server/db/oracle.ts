@@ -15,6 +15,10 @@ import type { Vessel, VesselStatus, StoreOrder, StoreOrderStatus, DeliveryVan, V
 import { seedPort, seedRetail, vesselPose } from '../../src/data/city';
 import type { ParkCompany, ParkBuilding, ParkVehicle, BuildingKind, BuildingStatus, VehicleKind, RouteCode } from '../../src/data/park';
 import { TABLE_GROUPS, checkReadOnlySql } from './schema-meta';
+import { OracleLab, type LabSession } from './oracle-lab';
+import type { ExternalCommand, ExternalSqlResult, LabRun, LabScenario, RowHistory, VpdReport } from '../../src/api/types';
+import type { TimeFrame } from '../../src/data/timeframe';
+import { config } from '../config';
 import { WORLD_VERSION } from '../../src/data/seed';
 import { legRoadIn, legYardIn, legReverseIn, legYardOut, legRoadOut } from '../../src/sim/paths';
 import {
@@ -27,6 +31,10 @@ type Row = Record<string, any>;
 
 const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() : d ? new Date(String(d)).toISOString() : null);
 const yn = (b: boolean) => (b ? 'Y' : 'N');
+/** Module name of the server's own sessions; the Database Lab triggers ignore changes made under it. */
+const APP_MODULE = 'cargoverse-api';
+/** No call may hang the server: a statement blocked longer than this (e.g. by a lock held in SQL Developer) is cancelled. */
+const TX_TIMEOUT_MS = 30000;
 const round = (n: number, p = 3) => Math.round(n * 10 ** p) / 10 ** p;
 const clampSec = (n: number | null) => (n === null ? null : Math.max(0, Math.min(9999999, Math.round(n))));
 
@@ -40,8 +48,34 @@ export class OracleRepo implements Repo {
   readonly kind = 'oracle' as const;
   private oracledb: any;
   private pool: any;
+  private lab!: OracleLab;
 
   constructor(private cfg: { user: string; password: string; connectString: string }) {}
+
+  /** A pool connection that identifies itself to Oracle as `module` — i.e. as an outside client, not the server. */
+  private async session(module: string, userId: number | null): Promise<LabSession> {
+    const raw = await this.pool.getConnection();
+    const c = this.instrument(raw, 'api');
+    raw.module = module;
+    try {
+      if (userId === null) await c.execute('BEGIN DBMS_SESSION.CLEAR_IDENTIFIER; END;');
+      else await c.execute('BEGIN DBMS_SESSION.SET_IDENTIFIER(:id); END;', { id: String(userId) });
+    } catch (e) {
+      await raw.close();
+      throw e;
+    }
+    return {
+      c, raw,
+      done: async () => {
+        try {
+          raw.callTimeout = 0;
+          raw.module = APP_MODULE;
+          await raw.execute('BEGIN NULL; END;'); // carries the module name back to Oracle
+        } catch { /* the connection may be unusable after a timeout; closing drops it */ }
+        try { await raw.close(); } catch { /* ignore */ }
+      },
+    };
+  }
 
   async init(): Promise<void> {
     try {
@@ -53,7 +87,12 @@ export class OracleRepo implements Repo {
     }
     this.oracledb.outFormat = this.oracledb.OUT_FORMAT_OBJECT;
     this.oracledb.fetchAsString = [this.oracledb.CLOB];
-    this.pool = await this.oracledb.createPool({ ...this.cfg, poolMin: 1, poolMax: 8, poolIncrement: 1 });
+    this.pool = await this.oracledb.createPool({ ...this.cfg, poolMin: 1, poolMax: 12, poolIncrement: 1 });
+    this.lab = new OracleLab({
+      oracledb: this.oracledb, owner: this.cfg.user, connectString: this.cfg.connectString, accountPassword: config.lab.accountPassword,
+      flashbackMaxS: config.lab.flashbackMaxS,
+      tx: (u, fn, src) => this.tx(u, fn, src), session: (m, u) => this.session(m, u),
+    });
     // the port and store tables arrived with schema version 6: an older database must be recreated
     const t = await this.q(null, "SELECT COUNT(*) AS n FROM user_tables WHERE table_name IN ('VESSELS', 'STORE_ORDERS', 'CONTAINER_MOVES')");
     const st = Number(t[0]?.N ?? 0) < 3 ? [] : await this.q(null, "SELECT (SELECT COUNT(*) FROM stores WHERE store_id = 'ST-11') + (SELECT COUNT(*) FROM park_vehicles WHERE vehicle_id = 'VEH-478') - 1 AS n FROM dual");
@@ -65,6 +104,8 @@ export class OracleRepo implements Repo {
       throw new Error('The CargoVerse schema is empty. Run `npm run db:setup` to create tables and load the seed data.');
     }
     await this.rebrand();
+    const lab = await this.lab.info();
+    if (!lab.control) console.warn('[cargoverse] The Database Lab is not installed in this schema yet — run `npm run db:lab` once (keeps your data).');
   }
 
   /**
@@ -121,7 +162,8 @@ export class OracleRepo implements Repo {
     const raw = await this.pool.getConnection();
     const c = this.instrument(raw, source);
     try {
-      raw.module = 'cargoverse-api';
+      raw.module = APP_MODULE;
+      raw.callTimeout = TX_TIMEOUT_MS;
       if (userId === null) await c.execute('BEGIN DBMS_SESSION.CLEAR_IDENTIFIER; END;');
       else await c.execute('BEGIN DBMS_SESSION.SET_IDENTIFIER(:id); END;', { id: String(userId) });
       const out = await fn(c);
@@ -131,6 +173,7 @@ export class OracleRepo implements Repo {
       try { await raw.rollback(); } catch { /* ignore */ }
       throw this.mapError(e);
     } finally {
+      raw.callTimeout = 0;
       await raw.close();
     }
   }
@@ -267,10 +310,37 @@ export class OracleRepo implements Repo {
     });
   }
 
-  async persist(b: PersistBatch): Promise<void> {
+  async persist(b: PersistBatch): Promise<string[]> {
+    const skipped: string[] = [];
     await this.tx(null, async (c) => {
       // one execute per row keeps bind types exact for nullable columns (batches are small: a few rows per flush)
       const many = async (sql: string, data: Row[]) => { for (const row of data) await c.execute(sql, row); };
+      // Rows someone else has locked (e.g. an uncommitted UPDATE in SQL Developer) are skipped instead of waited
+      // for: SELECT … FOR UPDATE SKIP LOCKED returns only the rows this transaction could lock. The skipped
+      // rows are written in a later flush, once the other session commits or rolls back.
+      const free = async <T>(kind: string, table: string, keyExpr: string, items: T[], key: (x: T) => string): Promise<T[]> => {
+        if (!items.length) return items;
+        const ok = new Set<string>();
+        const ids = items.map(key);
+        for (let i = 0; i < ids.length; i += 400) {
+          const ph = placeholders('k', ids.slice(i, i + 400));
+          const r = await c.execute(`SELECT ${keyExpr} AS k FROM ${table} WHERE ${keyExpr} IN (${ph.sql}) FOR UPDATE SKIP LOCKED`, ph.binds);
+          for (const row of (r.rows ?? []) as Row[]) ok.add(String(row.K));
+        }
+        return items.filter((x) => { const k = key(x); if (ok.has(k)) return true; skipped.push(`${kind}:${k}`); return false; });
+      };
+      b.trucks = await free('truck', 'trucks', 'truck_id', b.trucks, (t) => t.id);
+      b.docks = await free('dock', 'docks', 'dock_id', b.docks, (d) => d.id);
+      b.forklifts = await free('forklift', 'forklifts', 'forklift_id', b.forklifts, (f) => f.id);
+      b.chargers = await free('charger', 'chargers', 'charger_id', b.chargers, (x) => x.id);
+      b.facilities = await free('facility', 'facilities', 'facility_id', b.facilities, (f) => f.id);
+      b.vessels = await free('vessel', 'vessels', 'vessel_id', b.vessels, (v) => v.id);
+      b.berths = await free('berth', 'port_berths', 'berth_code', b.berths, (x) => x.id);
+      b.cranes = await free('crane', 'quay_cranes', 'crane_id', b.cranes, (x) => x.id);
+      b.stores = await free('store', 'stores', 'store_id', b.stores, (x) => x.id);
+      b.storeLines = await free('storeLine', 'store_stock', "store_id || ':' || sku_id", b.storeLines, (x) => `${x.storeId}:${x.line.skuId}`);
+      b.vans = await free('van', 'delivery_vans', 'van_id', b.vans, (v) => v.id);
+      const simFree = ((await c.execute('SELECT state_id FROM sim_state WHERE state_id = 1 FOR UPDATE SKIP LOCKED')).rows ?? []).length > 0;
 
       await many(`INSERT INTO stock_movements (facility_id, sku_id, pallets_delta, units_delta, reason, pallet_id, shipment_id, forklift_id, sim_time_s)
                   VALUES (:fac, :sku, :pallets, :units, :reason, :pallet, :shipment, :forklift, :t)`,
@@ -346,7 +416,7 @@ export class OracleRepo implements Repo {
       await this.persistPortAndStores(b, many);
 
       const P = b.world.port;
-      await c.execute(`UPDATE sim_state SET sim_time_s = :t, real_time_s = :r, next_shipment = :ns, next_pallet = :np,
+      if (simFree) await c.execute(`UPDATE sim_state SET sim_time_s = :t, real_time_s = :r, next_shipment = :ns, next_pallet = :np,
                               next_box = :nb, next_order = :no, port_moves_today = :pm, port_calls_today = :pc,
                               port_gate_in_today = :pgi, port_gate_out_today = :pgo, port_ext_timer_s = :pet, updated_at = SYSTIMESTAMP
                         WHERE state_id = 1`,
@@ -354,6 +424,7 @@ export class OracleRepo implements Repo {
           nb: P.nextBox, no: b.world.retail.nextOrder, pm: P.movesToday, pc: P.callsToday, pgi: P.gateInToday, pgo: P.gateOutToday,
           pet: round(P.extTimer, 2) });
     }, 'sim');
+    return skipped;
   }
 
   async saveControl(control: SimControl, userId: number | null): Promise<void> {
@@ -927,6 +998,16 @@ export class OracleRepo implements Repo {
       };
     }, 'live');
   }
+
+  // ---------------------------------------------------------------- Database Lab (oracle-lab.ts)
+  labInfo() { return this.lab.info(); }
+  pollCommands(): Promise<ExternalCommand[]> { return this.lab.poll(); }
+  ackCommands(results: { id: number; status: 'APPLIED' | 'REJECTED'; message: string }[]): Promise<void> { return this.lab.ack(results); }
+  runExternalSql(userId: number, sql: string): Promise<ExternalSqlResult> { return this.lab.runExternalSql(userId, sql); }
+  flashback(secondsAgo: number, facilities: FacilityId[]): Promise<TimeFrame> { return this.lab.flashback(secondsAgo, facilities); }
+  rowHistory(kind: string, id: string, seconds: number): Promise<RowHistory> { return this.lab.rowHistory(kind, id, seconds); }
+  vpdReport(): Promise<VpdReport> { return this.lab.vpdReport(); }
+  runLab(userId: number, scenario: LabScenario): Promise<LabRun> { return this.lab.runLab(userId, scenario); }
 }
 
 function numOrNull(v: unknown): number | null {
