@@ -176,7 +176,7 @@ async function main(): Promise<void> {
       const leak = a.predicate ? a.sitesSeen.filter((s) => !a.sites.includes(s)) : [];
       assert(!leak.length, `${a.account} saw ${leak.join(', ')}`);
     }
-    const t = rep.tables[0];
+    const t = Object.keys(rep.owner)[0];  // the tables the probe counts (VPD_PROBE_TABLES)
     const counts = rep.accounts.map((a) => `${a.account} ${a.counts[t]}`).join(', ');
     const distinct = new Set(rep.accounts.map((a) => a.counts[t])).size;
     assert(distinct > 1, `every account saw the same number of ${t}`);
