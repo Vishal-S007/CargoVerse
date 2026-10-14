@@ -523,6 +523,23 @@ button.fl-site:hover { color: var(--blue); }
 .clear-chat { align-self: center; }
 .setup-note { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid #e3e9f3; border-left: 3px solid var(--blue); border-radius: 12px; padding: 12px 14px; font-size: 12.5px; }
 .setup-note code.block { display: block; background: #f3f5fa; border-radius: 7px; padding: 7px 10px; font-size: 12px; }
+.setup-note.demo-note { border-left-color: #f59e0b; }
+.setup-note.demo-note b { display: flex; align-items: center; gap: 6px; }
+.setup-note .link { align-self: flex-start; }
+.msg.assistant ol { margin: 2px 0 6px; padding-left: 20px; }
+.msg.assistant code { background: #f3f5fa; border-radius: 4px; padding: 0 4px; font-size: 11.5px; }
+.ai-query { margin-top: 8px; border: 1px solid #dfe6f3; border-left: 3px solid #6366f1; border-radius: 9px; padding: 7px 9px; background: #f8f9fe; display: flex; flex-direction: column; gap: 4px; }
+.ai-query.bad { border-left-color: #dc2626; background: #fff6f6; }
+.ai-query-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #4338ca; }
+.ai-query-head b { color: var(--ink); font-size: 12px; }
+.ai-query-sec { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; color: #17633a; }
+.ai-query-sec code { background: #e6f6ec; border-radius: 4px; padding: 0 4px; color: #17633a; font-size: 11px; }
+.ai-query .link { align-self: flex-start; }
+.ai-sql { margin: 2px 0 0; background: #101828; color: #e2e8f0; border-radius: 7px; padding: 8px 10px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; }
+.ai-rows { overflow-x: auto; max-height: 220px; border: 1px solid #e3e9f3; border-radius: 7px; background: #fff; }
+.ai-rows table { border-collapse: collapse; font-size: 11px; width: 100%; }
+.ai-rows th, .ai-rows td { padding: 3px 7px; border-bottom: 1px solid #eef1f6; text-align: left; white-space: nowrap; }
+.ai-rows th { background: #f3f5fa; position: sticky; top: 0; font-weight: 600; color: var(--ink-2); }
 
 /* ---------------------------------------------------------------- logistics park */
 .tag.park { background: rgba(31, 42, 68, 0.82); color: #fff; font-size: 10px; }

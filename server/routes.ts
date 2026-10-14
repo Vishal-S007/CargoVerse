@@ -552,7 +552,12 @@ export function buildRouter(repo: Repo, host: SimHost, opts: Opts): Router {
     return task;
   }, { perm: 'MANAGE_TASKS' });
 
-  router.add('GET', '/api/assistant/status', () => ({ configured: assistantConfigured(), model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5-5' }));
+  router.add('GET', '/api/assistant/status', async () => ({
+    configured: assistantConfigured(),
+    mode: assistantConfigured() ? 'claude' : 'demo',
+    model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5-5',
+    oracle: (await host.wms.features()).engine === 'oracle',
+  }));
 
   const askTimes = new Map<number, number[]>();
   router.add('POST', '/api/assistant', async (ctx) => {

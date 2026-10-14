@@ -7,7 +7,7 @@ import type {
 import type {
   SessionUser, Task, TaskUpdate, TaskStatus, TaskType, Priority, AuditEntry, Employee, UserRecord,
   SimControl, KpiRow, WorkloadRow, LowStockRow, Role, JobTitle, RoleInfo,
-  ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail, SqlResult, SqlActivity, DbLiveRow,
+  ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail, SqlResult, SqlActivity, AiQueryResult, TableInfo, DbLiveRow,
   ContainerMoveRow, VesselCallRow, StoreOrderRow,
   ExternalCommand, ExternalSqlResult, LabRun, LabScenario, RowHistory, VpdReport,
 } from '../../src/api/types';
@@ -165,6 +165,10 @@ export interface Repo {
   // database workspace
   dbOverview(): Promise<DbOverview>;
   dbTable(name: string): Promise<DbTableDetail>;
+  /** AI assistant: one read-only query run as the user's own database account, so Oracle's row-level security applies. */
+  aiQuery(userId: number, sql: string): Promise<AiQueryResult>;
+  /** Tables the AI may query, with columns and comments (all tables when names is empty, columns omitted). */
+  describeTables(names: string[]): Promise<TableInfo[]>;
   runSql(userId: number, sql: string): Promise<SqlResult>;
   sqlActivity(): (SqlActivity & { source: SqlSource })[];
   /** Current row counts of the busiest tables (read live from the database). */

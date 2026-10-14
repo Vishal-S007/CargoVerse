@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import type { WorldState, FacilityId } from '../../src/data/types';
 import type {
   SessionUser, Task, TaskUpdate, TaskStatus, AuditEntry, Employee, UserRecord, SimControl, KpiRow, WorkloadRow,
-  LowStockRow, Role, JobTitle, RoleInfo, Permission, ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail, SqlResult,
+  LowStockRow, Role, JobTitle, RoleInfo, Permission, ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail, SqlResult, AiQueryResult, TableInfo,
   DbLiveRow, ContainerMoveRow, VesselCallRow, StoreOrderRow,
 } from '../../src/api/types';
 import type { StoreOrder } from '../../src/data/types';
@@ -645,6 +645,13 @@ export class MemoryRepo implements Repo {
   }
 
   sqlActivity() { return []; }
+
+  async aiQuery(): Promise<AiQueryResult> {
+    throw new AppError(501, 'Questions answered with SQL need Oracle; this server runs without a database (DB_MODE=memory).');
+  }
+  async describeTables(): Promise<TableInfo[]> {
+    throw new AppError(501, 'The table descriptions come from Oracle; this server runs without a database (DB_MODE=memory).');
+  }
 
   // ---------------------------------------------------------------- container port and vendor stores
   async setVesselHold(userId: number, vesselId: string, hold: boolean): Promise<void> {

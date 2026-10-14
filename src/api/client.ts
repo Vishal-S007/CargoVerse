@@ -6,7 +6,7 @@ import type {
   LowStockRow, JobTitle, RoleInfo, Role, TaskType, Priority, ParkData, BuildingPatch, GateEntry, TradeRow,
   DbOverview, DbTableDetail, SqlResult, SqlActivity, SavedQuery, DbLive, DbLiveRow,
   ContainerMoveRow, VesselCallRow, StoreOrderRow,
-  LabStatus, SqlFeedItem, ExternalSqlResult, RowHistory, VpdReport, LabRun, LabScenario,
+  LabStatus, SqlFeedItem, ExternalSqlResult, RowHistory, VpdReport, LabRun, LabScenario, AssistantStatus, AssistantReply,
 } from './types';
 import type { Vessel, Berth, StoreOrder } from '../data/types';
 import type {
@@ -144,9 +144,9 @@ export const api = {
 
   alerts: (facility?: FacilityId) => call<Alert[]>('GET', `/alerts${qs({ facility })}`),
   alertTask: (alertId: string, assigneeId?: number) => call<Task>('POST', '/alerts/task', { alertId, assigneeId }),
-  assistantStatus: () => call<{ configured: boolean; model: string }>('GET', '/assistant/status'),
+  assistantStatus: () => call<AssistantStatus>('GET', '/assistant/status'),
   assistant: (messages: { role: 'user' | 'assistant'; content: string }[], facilityId: FacilityId) =>
-    call<{ reply: string; actions: { type: 'focus'; ref: EntityRef }[]; tools: string[] }>('POST', '/assistant', { messages, facilityId }),
+    call<AssistantReply>('POST', '/assistant', { messages, facilityId }),
 };
 
 export interface Alert {

@@ -162,9 +162,24 @@ Two agents sit in the **Work** panel (and the ✦ button in the header):
   - blocked tasks.
 
   Each warning has a suggested task. **Create task** assigns it to the least-busy person with the right job at that site, e.g. the inventory clerk for low stock. No API key needed.
-- **Operations assistant (Assistant tab — every role).** It can also answer questions about imports, exports and park tenants. Ask in plain language ("Which shipments are at risk?", "What should I do next?"). It uses Claude with tools that read the live data, can move the 3D view to what it is talking about, and — for managers, only when asked — creates tasks. Every tool is limited to the user's role and sites, and anything it creates is recorded in the audit trail like any other change.
+- **Operations assistant (Assistant tab — every role).** Ask in plain language: "Is the cold chain OK?", "Which lots
+  expire soon?", "Trace LOT-10050", "What should we reorder?", "Shortest pick route", "Any reports of broken glass?",
+  "Which ships are at the berths?". It has about 30 tools over the live operation and the Smart Warehouse, moves the 3D
+  view (or opens the X-ray and draws the pick route) to what it is talking about, and — for managers, only when asked —
+  creates tasks or recalls a lot. Every tool is limited to the user's role and sites, and anything it changes is in the
+  audit trail.
 
-  To turn it on, put `ANTHROPIC_API_KEY=…` in `.env` and restart. The key stays on the server.
+  **Questions answered with SQL.** For anything the tools do not cover ("which carrier was late most often this week?"),
+  the assistant writes one read-only Oracle query and runs it **as the user's own database account** (`CV_ALEX`,
+  `CV_MEERA`, …). Oracle's row-level security (VPD) then limits the rows to that user's sites, the account cannot see
+  passwords or sessions, and the query runs in a `READ ONLY` transaction with a 10-second limit. The chat shows the SQL,
+  the account it ran as, the `WHERE` clause Oracle added and the rows; each query is written to `AUDIT_LOG`
+  (`AI_SQL_QUERY`).
+
+  **With or without an API key.** With `ANTHROPIC_API_KEY=…` in `.env` (restart after adding it), Claude chooses the tools
+  and writes its own SQL. Without a key the assistant runs in **demo mode**: built-in rules pick the tool from the
+  question and answer from the same live data, and a few ready-made questions ("top products by demand", "how many
+  trucks", "stock by supplier", "latest audit changes") run real SQL on Oracle. The key stays on the server.
 
 ## Other commands
 

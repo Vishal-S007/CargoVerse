@@ -8,6 +8,7 @@ import { OracleWms } from '../wms/oracle-wms';
 import { sscc, siteStorage, shortestPath } from '../../src/data/wms';
 import type { FacilityId } from '../../src/data/types';
 import type { LabScenario } from '../../src/api/types';
+import { DEMO_SQL } from '../assistant-sql';
 
 type Result = { name: string; ok: boolean; detail: string; ms: number; skipped?: boolean };
 class Skip extends Error {}
@@ -212,6 +213,7 @@ async function main(): Promise<void> {
   }
 
   await wmsChecks(ext, q, one, repo, oracledb);
+  await aiChecks(one, repo);
 
   await ext.close();
   await repo.close();
@@ -224,6 +226,42 @@ async function main(): Promise<void> {
 main().catch((e) => { console.error(red(String((e as Error).stack ?? e))); process.exit(1); });
 
 // ================================================================ Smart Warehouse (10–12)
+async function aiChecks(one: (sql: string, b?: Record<string, unknown>) => Promise<Record<string, any> | undefined>, repo: OracleRepo): Promise<void> {
+  console.log('\n6 · AI assistant (database questions)');
+  const uid = async (u: string) => Number((await one(`SELECT user_id FROM app_users WHERE username = :u`, { u }))?.USER_ID);
+  const alex = await uid('alex.chen');
+  const admin = await uid('admin');
+  await check('a query runs as the user\'s own account, with row-level security', async () => {
+    const r = await repo.aiQuery(alex, 'SELECT DISTINCT facility_id FROM trucks ORDER BY 1');
+    assert(r.account === 'CV_ALEX', `ran as ${r.account}`);
+    const seen = r.rows.map((x) => String(x[0]));
+    const allowed = String((await one(`SELECT LISTAGG(facility_id, ',') WITHIN GROUP (ORDER BY facility_id) AS s FROM user_facility_access WHERE user_id = :u`, { u: alex }))?.S ?? '').split(',');
+    assert(seen.length > 0 && seen.every((s) => allowed.includes(s)), `CV_ALEX saw ${seen.join(', ')}; allowed ${allowed.join(', ')}`);
+    return `as ${r.account}: sites ${seen.join(', ')} · filter ${r.filter}`;
+  });
+  await check('the AI cannot read passwords or change data', async () => {
+    let pw = '';
+    try { await repo.aiQuery(admin, 'SELECT username, password_hash FROM app_users'); pw = 'read APP_USERS'; } catch (e) { assert(/ORA-00942|ORA-01031/.test((e as Error).message), (e as Error).message); }
+    assert(!pw, 'the AI account could read APP_USERS');
+    let dml = '';
+    try { await repo.aiQuery(admin, 'DELETE FROM tasks'); dml = 'ran a DELETE'; } catch (e) { assert(/SELECT or WITH/.test((e as Error).message), (e as Error).message); }
+    assert(!dml, 'a DELETE was accepted');
+    return 'APP_USERS → ORA-00942 · DELETE refused before it reaches Oracle';
+  });
+  await check('table descriptions for writing SQL', async () => {
+    const t = await repo.describeTables(['LOTS', 'APP_USERS']);
+    assert(t.length === 1 && t[0].table === 'LOTS', `got ${t.map((x) => x.table).join(', ')}`);
+    return `LOTS: ${t[0].columns.length} columns (APP_USERS hidden)`;
+  });
+  await check('every demo-mode question is valid Oracle SQL', async () => {
+    const out: string[] = [];
+    for (const d of DEMO_SQL) {
+      try { const r = await repo.aiQuery(admin, d.sql); out.push(`${r.rowCount}`); } catch (e) { throw new Error(`"${d.purpose}": ${(e as Error).message}`); }
+    }
+    return `${DEMO_SQL.length} queries ran as CV_ADMIN (rows: ${out.join(', ')})`;
+  });
+}
+
 async function wmsChecks(ext: any, q: (sql: string, b?: Record<string, unknown>) => Promise<any[]>, one: (sql: string, b?: Record<string, unknown>) => Promise<Record<string, any> | undefined>, repo: OracleRepo, oracledb: any): Promise<void> {
   console.log('\n5 · Smart Warehouse');
   const has = async (sql: string) => { try { return Number((await one(sql))?.N ?? 0) > 0; } catch { return false; } };

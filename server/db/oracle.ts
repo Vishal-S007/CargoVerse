@@ -9,7 +9,7 @@ import type {
 import type {
   SessionUser, Task, TaskUpdate, TaskStatus, AuditEntry, Employee, UserRecord, SimControl, KpiRow, WorkloadRow,
   LowStockRow, Role, JobTitle, RoleInfo, Permission, ParkData, BuildingPatch, GateEntry, TradeRow, DbOverview, DbTableDetail,
-  SqlResult, SqlActivity, DbConstraint, DbLiveRow, ContainerMoveRow, VesselCallRow, StoreOrderRow,
+  SqlResult, SqlActivity, AiQueryResult, TableInfo, DbConstraint, DbLiveRow, ContainerMoveRow, VesselCallRow, StoreOrderRow,
 } from '../../src/api/types';
 import type { Vessel, VesselStatus, StoreOrder, StoreOrderStatus, DeliveryVan, VanStatus, QuayCrane, TradeLane } from '../../src/data/types';
 import { seedPort, seedRetail, vesselPose } from '../../src/data/city';
@@ -808,6 +808,79 @@ export class OracleRepo implements Repo {
     await this.tx(userId, (cc) => cc.execute(`BEGIN wt_core.log_audit('SQL_QUERY', 'DATABASE', NULL, NULL, :d); END;`,
       { d: `${result.rowCount} rows · ${sql.replace(/\s+/g, ' ').slice(0, 1800)}` }));
     return result;
+  }
+
+  // ---------------------------------------------------------------- AI assistant: questions answered with SQL
+  /**
+   * Runs one read-only query for the AI assistant as the user's own database account (DB_ACCOUNTS:
+   * admin → CV_ADMIN, alex.chen → CV_ALEX, …). Oracle then applies the row-level security policy of
+   * that account, and the account has no access to passwords or sessions — so even a badly written or
+   * manipulated query cannot reach data the user may not see.
+   */
+  async aiQuery(userId: number, input: string): Promise<AiQueryResult> {
+    let sql: string;
+    try { sql = checkReadOnlySql(input); } catch (e) { throw new AppError(400, (e as Error).message); }
+    if (/@/.test(sql.replace(/'[^']*'/g, ''))) throw new AppError(400, 'Database links are not allowed.');
+    let acct: { U: string; P: string | null } | undefined;
+    try {
+      acct = await this.tx(null, async (c) => ((await c.execute(
+        `SELECT a.db_username AS u, wt_security.predicate_for(a.db_username) AS p FROM db_accounts a WHERE a.user_id = :u`, { u: userId })).rows ?? [])[0] as any, 'live');
+    } catch {
+      throw new AppError(503, 'Row-level security is not installed, so the AI cannot query Oracle safely. Run npm run db:lab.');
+    }
+    if (!acct) throw new AppError(403, 'This user has no database account (DB_ACCOUNTS), so the AI cannot query Oracle on their behalf. Ask an administrator.');
+    const t0 = performance.now();
+    let conn: any = null;
+    let result: AiQueryResult;
+    try {
+      conn = await this.oracledb.getConnection({ user: acct.U, password: config.lab.accountPassword, connectString: this.cfg.connectString });
+      conn.module = 'CargoVerse AI assistant';
+      conn.callTimeout = 10000; // ms
+      await conn.execute('SET TRANSACTION READ ONLY');
+      const r = await conn.execute(sql, {}, { outFormat: this.oracledb.OUT_FORMAT_ARRAY, maxRows: 51 });
+      const rows = (r.rows ?? []) as unknown[][];
+      result = {
+        columns: (r.metaData ?? []).map((m: any) => m.name), rows: rows.slice(0, 50).map((row) => row.map(cell)),
+        rowCount: Math.min(rows.length, 50), truncated: rows.length > 50, ms: Math.round(performance.now() - t0), statement: sql,
+        account: acct.U, filter: acct.P ?? null,
+      };
+    } catch (e) {
+      const m = String((e as Error).message).split('\n')[0];
+      if (/ORA-01017/.test(m)) throw new AppError(503, `Cannot sign in as ${acct.U} (ORA-01017). Run npm run db:lab.`);
+      throw new AppError(400, m);
+    } finally {
+      if (conn) { try { await conn.rollback(); await conn.close(); } catch { /* ignore */ } }
+    }
+    await this.tx(userId, (cc) => cc.execute(`BEGIN wt_core.log_audit('AI_SQL_QUERY', 'DATABASE', NULL, NULL, :d); END;`,
+      { d: `as ${acct.U} · ${result.rowCount} rows · ${sql.replace(/\s+/g, ' ').slice(0, 1800)}` }));
+    return result;
+  }
+
+  async describeTables(names: string[]): Promise<TableInfo[]> {
+    const hidden = `t.table_name NOT IN ('APP_USERS', 'USER_SESSIONS', 'DB_ACCOUNTS') AND t.table_name NOT LIKE 'AQ$%'
+                    AND t.table_name NOT LIKE 'SYS\\_%' ESCAPE '\\' AND t.table_name NOT LIKE 'DR$%' AND t.table_name NOT LIKE 'BIN$%'`;
+    return this.tx(null, async (c) => {
+      const want = names.map((n) => String(n).toUpperCase().replace(/[^A-Z0-9_$#]/g, '')).filter(Boolean).slice(0, 12);
+      const tabs = ((await c.execute(`SELECT t.table_name, c.comments FROM (SELECT table_name FROM user_tables UNION SELECT view_name FROM user_views) t
+                                        LEFT JOIN user_tab_comments c ON c.table_name = t.table_name
+                                       WHERE ${hidden} ${want.length ? `AND t.table_name IN (${want.map((_, i) => `:t${i}`).join(', ')})` : ''}
+                                       ORDER BY t.table_name`, Object.fromEntries(want.map((n, i) => [`t${i}`, n])))).rows ?? []) as any[];
+      const out: TableInfo[] = tabs.map((r) => ({ table: r.TABLE_NAME, comment: r.COMMENTS ?? null, columns: [] }));
+      if (!want.length) return out;
+      for (const t of out) {
+        const cols = ((await c.execute(`SELECT c.column_name, c.data_type, c.data_length, c.data_precision, c.data_scale, m.comments
+                                          FROM user_tab_columns c
+                                          LEFT JOIN user_col_comments m ON m.table_name = c.table_name AND m.column_name = c.column_name
+                                         WHERE c.table_name = :t ORDER BY c.column_id`, { t: t.table })).rows ?? []) as any[];
+        t.columns = cols.map((r) => ({
+          name: r.COLUMN_NAME,
+          type: r.DATA_TYPE === 'NUMBER' && r.DATA_PRECISION !== null ? `NUMBER(${r.DATA_PRECISION}${r.DATA_SCALE ? `,${r.DATA_SCALE}` : ''})`
+            : /CHAR/.test(r.DATA_TYPE) ? `${r.DATA_TYPE}(${r.DATA_LENGTH})` : r.DATA_TYPE,
+          comment: r.COMMENTS ?? null,
+        }));
+      }
+      return out;
+    }, 'live');
   }
 
   // ---------------------------------------------------------------- container port and vendor stores

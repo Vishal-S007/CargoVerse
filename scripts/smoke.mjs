@@ -61,6 +61,24 @@ try {
   ]) {
     await check(name, async () => { const j = await (await get(path, token)).json(); return j.source ? `source: ${j.source}` : ''; });
   }
+  const ask = async (q) => {
+    const r = await fetch(`${base}/api/assistant`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ messages: [{ role: 'user', content: q }], facilityId: 'WH-04' }) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    return r.json();
+  };
+  await check('AI assistant answers (demo mode without an API key)', async () => {
+    const j = await ask('Is the cold chain OK?');
+    if (!j.reply || !j.tools.includes('cold_chain_status')) throw new Error(`unexpected reply: ${JSON.stringify(j).slice(0, 200)}`);
+    return `mode: ${j.mode}`;
+  });
+  if (health.db === 'oracle') {
+    await check('AI assistant answers a database question in Oracle', async () => {
+      const j = await ask('Top products by demand');
+      const q = j.queries?.[0];
+      if (!q || q.error) throw new Error(q?.error ?? `no query ran: ${j.reply?.slice(0, 200)}`);
+      return `${q.rowCount} rows as ${q.account}`;
+    });
+  }
   console.log(failed ? `\n${failed} smoke check(s) failed\n` : '\nAll smoke checks passed\n');
   stop(failed ? 1 : 0);
 } catch (e) {

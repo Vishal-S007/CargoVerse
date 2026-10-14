@@ -206,6 +206,19 @@ export interface DbTableDetail {
   sample: { columns: string[]; rows: unknown[][] };
 }
 export interface SqlResult { columns: string[]; rows: unknown[][]; rowCount: number; truncated: boolean; ms: number; statement: string }
+/** A read-only query the AI assistant ran as the user's own database account (row-level security applies). */
+export interface AiQueryResult extends SqlResult { account: string; filter: string | null }
+export interface TableInfo { table: string; comment: string | null; columns: { name: string; type: string; comment: string | null }[] }
+/** AI operations assistant (server/assistant.ts). */
+export type XrayMode = 'sku' | 'abc' | 'expiry' | 'qc';
+export type AssistantAction =
+  | { type: 'focus'; ref: EntityRef }
+  | { type: 'xray'; facility: FacilityId; mode?: XrayMode; highlight?: string[]; route?: { facility: FacilityId; path: { x: number; z: number }[]; stops: string[] } | null };
+export interface AssistantQuery { purpose: string; sql: string; account: string | null; filter: string | null; columns: string[]; rows: unknown[][]; rowCount: number; truncated: boolean; ms: number; error: string | null }
+export interface AssistantReply { reply: string; actions: AssistantAction[]; tools: string[]; queries: AssistantQuery[]; mode: 'claude' | 'demo' }
+
+export interface AssistantStatus { configured: boolean; mode: 'claude' | 'demo'; model: string; oracle: boolean }
+
 export interface SqlActivity { at: string; ms: number; rows: number; ok: boolean; sql: string; error?: string }
 /** Live write-through status of the database, streamed with every snapshot. */
 export interface DbLiveStatus {

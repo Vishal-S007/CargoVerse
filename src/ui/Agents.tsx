@@ -1,8 +1,10 @@
 // AI agents in the Work panel: the exception watcher (Alerts) and the operations assistant (chat).
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Sparkles, Send, Crosshair, ClipboardPlus, AlertTriangle, BatteryLow, Clock3, PackageX, Ban, Wrench } from 'lucide-react';
+import { Sparkles, Send, Database, ShieldCheck, Crosshair, ClipboardPlus, AlertTriangle, BatteryLow, Clock3, PackageX, Ban, Wrench } from 'lucide-react';
 import type { FacilityId, EntityRef } from '../data/types';
 import { api, type Alert } from '../api/client';
+import type { AssistantAction, AssistantQuery, AssistantStatus } from '../api/types';
+import { showXray } from './Wms';
 import { useApp } from '../store';
 
 const FAC: Record<FacilityId, string> = { 'WH-01': 'Riverside Hub', 'WH-02': 'Northgate DC', 'WH-04': 'Southfield Cross-Dock' };
@@ -83,56 +85,131 @@ export function AlertsTab() {
 
 // ---------------------------------------------------------------- operations assistant
 
-interface Msg { role: 'user' | 'assistant'; content: string; tools?: string[]; error?: boolean }
+interface Msg { role: 'user' | 'assistant'; content: string; tools?: string[]; queries?: AssistantQuery[]; mode?: 'claude' | 'demo'; error?: boolean }
 
 const TOOL_LABEL: Record<string, string> = {
   get_site_overview: 'site KPIs', list_trucks: 'trucks', get_truck: 'truck details', list_forklifts: 'forklifts', list_alerts: 'alerts',
-  list_tasks: 'tasks', list_team: 'team', get_imports_exports: 'imports/exports', list_park_tenants: 'park tenants', search: 'search', create_task: 'created a task', show_in_3d: 'showed it in 3D',
+  list_tasks: 'tasks', list_team: 'team', get_imports_exports: 'imports/exports', list_park_tenants: 'park tenants', search: 'search',
+  create_task: 'created a task', show_in_3d: 'showed it in 3D', get_port_status: 'port', trace_container: 'container history', get_store_stock: 'stores',
+  warehouse_lots: 'lots & FEFO', trace: 'recall trace', cold_chain_status: 'cold chain', reorder_suggestions: 'reorder points', demand_forecast: 'forecast',
+  slotting_report: 'ABC slotting', pick_route: 'pick route', scan_label: 'GS1 scan', search_damage_reports: 'vector search', show_warehouse_xray: 'X-ray',
+  recall_lot: 'recalled a lot', describe_tables: 'table columns', query_database: 'Oracle SQL',
 };
 
-/** Tiny formatter for assistant replies: paragraphs, "- " bullets and **bold**. */
+/** Tiny formatter for assistant replies: paragraphs, "- " bullets, numbered lists, **bold** and `code`. */
 function Rich({ text }: { text: string }) {
-  const bold = (s: string, key: string) => s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
-    part.startsWith('**') && part.endsWith('**') ? <b key={`${key}-${i}`}>{part.slice(2, -2)}</b> : <span key={`${key}-${i}`}>{part}</span>);
+  const inline = (s: string, key: string) => s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) =>
+    part.startsWith('**') && part.endsWith('**') ? <b key={`${key}-${i}`}>{part.slice(2, -2)}</b>
+      : part.startsWith('`') && part.endsWith('`') && part.length > 2 ? <code key={`${key}-${i}`}>{part.slice(1, -1)}</code>
+        : <span key={`${key}-${i}`}>{part}</span>);
   const blocks: JSX.Element[] = [];
   let list: string[] = [];
-  const flush = () => { if (list.length) { const items = list; blocks.push(<ul key={`ul${blocks.length}`}>{items.map((l, i) => <li key={i}>{bold(l, `li${i}`)}</li>)}</ul>); list = []; } };
+  let ordered = false;
+  const flush = () => {
+    if (!list.length) return;
+    const items = list.map((l, i) => <li key={i}>{inline(l, `li${blocks.length}-${i}`)}</li>);
+    blocks.push(ordered ? <ol key={`l${blocks.length}`}>{items}</ol> : <ul key={`l${blocks.length}`}>{items}</ul>);
+    list = [];
+  };
   text.split('\n').forEach((line, i) => {
-    const m = /^\s*(?:[-*•]|\d+\.)\s+(.*)$/.exec(line);
-    if (m) { list.push(m[1]); return; }
+    const m = /^\s*([-*•]|\d+\.)\s+(.*)$/.exec(line);
+    if (m) {
+      const isNum = /\d/.test(m[1]);
+      if (list.length && isNum !== ordered) flush();
+      ordered = isNum;
+      list.push(m[2]);
+      return;
+    }
     flush();
-    if (line.trim()) blocks.push(<p key={`p${i}`}>{bold(line.replace(/^#+\s*/, ''), `p${i}`)}</p>);
+    if (line.trim()) blocks.push(<p key={`p${i}`}>{inline(line.replace(/^#+\s*/, ''), `p${i}`)}</p>);
   });
   flush();
   return <>{blocks}</>;
+}
+
+/** A database query the assistant ran: which account, which row filter, the SQL and the first rows. */
+function QueryCard({ q }: { q: AssistantQuery }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`ai-query ${q.error ? 'bad' : ''}`}>
+      <div className="ai-query-head">
+        <Database size={13} />
+        <b>{q.purpose || 'Database query'}</b>
+        {q.error ? <span className="err small">{q.error}</span>
+          : <span className="muted small">{q.rowCount}{q.truncated ? '+' : ''} row{q.rowCount === 1 ? '' : 's'} · {q.ms} ms</span>}
+      </div>
+      {q.account && (
+        <div className="ai-query-sec small">
+          <ShieldCheck size={12} /> ran as <code>{q.account}</code>
+          {q.filter ? <> · Oracle added <code>WHERE {q.filter}</code></> : <> · no row filter (all sites)</>}
+        </div>
+      )}
+      <button className="link small" onClick={() => setOpen(!open)}>{open ? 'Hide' : 'Show'} the SQL{q.rows.length ? ' and rows' : ''}</button>
+      {open && (
+        <>
+          <pre className="ai-sql">{q.sql}</pre>
+          {q.columns.length > 0 && (
+            <div className="ai-rows">
+              <table>
+                <thead><tr>{q.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+                <tbody>{q.rows.slice(0, 12).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c === null || c === undefined ? '—' : String(c)}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function runAction(a: AssistantAction) {
+  if (a.type === 'focus') goTo(a.ref);
+  else if (a.type === 'xray') {
+    const patch: Parameters<typeof showXray>[1] = { highlight: a.highlight ?? [] };
+    if (a.mode) patch.mode = a.mode;
+    if (a.route !== undefined) patch.route = a.route;
+    showXray(a.facility, patch);
+  }
 }
 
 export function AssistantTab() {
   const user = useApp((s) => s.user)!;
   const facility = useApp((s) => s.facilityId);
   const storeKey = `waretrack.chat.${user.userId}`;
-  const [status, setStatus] = useState<{ configured: boolean; model: string } | null>(null);
+  const [status, setStatus] = useState<AssistantStatus | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>(() => {
     try { return JSON.parse(sessionStorage.getItem(storeKey) ?? '[]') as Msg[]; } catch { return []; }
   });
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [hideNote, setHideNote] = useState(() => { try { return localStorage.getItem('cargoverse.ai.demoNote') === 'hidden'; } catch { return false; } });
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { api.assistantStatus().then(setStatus).catch(() => setStatus({ configured: false, model: '' })); }, []);
+  useEffect(() => { api.assistantStatus().then(setStatus).catch(() => setStatus({ configured: false, mode: 'demo', model: '', oracle: false })); }, []);
   useEffect(() => {
     try { sessionStorage.setItem(storeKey, JSON.stringify(msgs.slice(-30))); } catch { /* ignore */ }
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [msgs, storeKey]);
 
   const manager = user.permissions.includes('MANAGE_TASKS');
-  const suggestions = manager
-    ? ['How is this site doing right now?', 'Which shipments are at risk of being late?', 'How many imports and exports today?', 'Who on the team has the most open work?']
-    : ['What should I work on next?', 'Where is my forklift and how is its battery?', 'Which trucks are arriving soon?'];
+  const reports = user.permissions.includes('VIEW_REPORTS');
+  const suggestions = [
+    ...(manager ? ['What needs attention right now?', 'Is the cold chain OK?', 'What should we reorder?'] : ['What should I work on next?', 'Is the cold chain OK?']),
+    'Which lots expire soon?',
+    ...(reports ? ['Trace a lot to the stores', 'Show ABC slotting'] : []),
+    'Shortest pick route',
+    'Any reports of broken glass?',
+    ...(reports && status?.oracle ? ['Top products by demand (SQL)'] : []),
+  ];
+  const demo = status?.mode === 'demo';
 
   const ask = async (text: string, e?: FormEvent) => {
     e?.preventDefault();
-    const q = text.trim();
+    let q = text.trim();
     if (!q || busy) return;
+    if (q === 'Trace a lot to the stores') {
+      try { const l = await api.wmsLots(); q = `Trace ${[...l.lots].sort((a, b) => (b.unitsReceived - b.units) - (a.unitsReceived - a.units))[0]?.lotId ?? 'LOT-10001'}`; } catch { q = 'Trace LOT-10001'; }
+    }
+    if (q === 'Top products by demand (SQL)') q = 'Top products by demand';
     const next: Msg[] = [...msgs, { role: 'user', content: q }];
     setMsgs(next);
     setInput('');
@@ -140,8 +217,8 @@ export function AssistantTab() {
     try {
       const history = next.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
       const r = await api.assistant(history, facility);
-      setMsgs([...next, { role: 'assistant', content: r.reply, tools: r.tools }]);
-      for (const a of r.actions) if (a.type === 'focus') goTo(a.ref);
+      setMsgs([...next, { role: 'assistant', content: r.reply, tools: r.tools, queries: r.queries, mode: r.mode }]);
+      for (const a of r.actions) runAction(a);
     } catch (err) {
       setMsgs([...next, { role: 'assistant', content: (err as Error).message, error: true }]);
     } finally {
@@ -151,28 +228,35 @@ export function AssistantTab() {
 
   return (
     <div className="tab chat">
-      {status && !status.configured && (
-        <div className="setup-note">
-          <b>Connect the assistant</b>
-          <span>The assistant uses Claude through the Anthropic API. Add your key to the <code>.env</code> file in the project folder and restart the server:</span>
+      {demo && !hideNote && (
+        <div className="setup-note demo-note">
+          <b><Sparkles size={13} /> Demo mode</b>
+          <span>No Anthropic API key is set, so the assistant answers common questions with built-in rules — it still reads the live data{status?.oracle ? ' and runs real Oracle queries' : ''}. For free-form questions (Claude writes its own SQL), add to <code>.env</code> and restart:</span>
           <code className="block">ANTHROPIC_API_KEY=sk-ant-…</code>
-          <span className="muted small">The key stays on the server — it is never sent to the browser. The exception watcher in the Alerts tab works without a key.</span>
+          <button className="link small" onClick={() => { setHideNote(true); try { localStorage.setItem('cargoverse.ai.demoNote', 'hidden'); } catch { /* ignore */ } }}>Hide this note</button>
         </div>
       )}
       <div className="chat-log">
         {!msgs.length && (
           <div className="chat-empty">
             <Sparkles size={22} className="blue" />
-            <b>Ask about live operations at {FAC[facility]}</b>
-            <span className="muted small">Answers come from the same live data as the dashboard, limited to what your role can see.{manager ? ' It can also create tasks when you ask it to.' : ''}</span>
+            <b>Ask about live operations{status ? '' : ''} at {FAC[facility]}</b>
+            <span className="muted small">
+              Answers come from the same live data as the dashboard, limited to what your role can see.
+              {reports && status?.oracle ? ' Database questions run in Oracle as your own account, so row-level security applies.' : ''}
+              {manager ? ' It can also create tasks or recall a lot when you ask it to.' : ''}
+            </span>
             <div className="chips">{suggestions.map((s) => <button key={s} className="chip-btn" onClick={() => ask(s)}>{s}</button>)}</div>
           </div>
         )}
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role} ${m.error ? 'error' : ''}`}>
             {m.role === 'assistant' ? <Rich text={m.content} /> : m.content}
+            {m.queries?.map((q, j) => <QueryCard key={j} q={q} />)}
             {m.tools && m.tools.length > 0 && (
-              <span className="msg-tools">checked: {Array.from(new Set(m.tools)).map((t) => TOOL_LABEL[t] ?? t).join(' · ')}</span>
+              <span className="msg-tools">
+                {m.mode === 'demo' ? 'demo · ' : ''}checked: {Array.from(new Set(m.tools)).map((t) => TOOL_LABEL[t] ?? t).join(' · ')}
+              </span>
             )}
           </div>
         ))}
@@ -180,7 +264,7 @@ export function AssistantTab() {
         <div ref={endRef} />
       </div>
       <form className="chat-input" onSubmit={(e) => ask(input, e)}>
-        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about trucks, docks, stock, tasks…" maxLength={1000} aria-label="Ask the assistant" />
+        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder={demo ? 'Ask about lots, cold chain, reorders, trucks…' : 'Ask anything about operations or the data…'} maxLength={1000} aria-label="Ask the assistant" />
         <button className="btn-primary sm" type="submit" disabled={busy || !input.trim()} aria-label="Send"><Send size={14} /></button>
       </form>
       {msgs.length > 0 && <button className="link small clear-chat" onClick={() => setMsgs([])}>Clear conversation</button>}
