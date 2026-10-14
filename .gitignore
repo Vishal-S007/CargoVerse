@@ -1,0 +1,8 @@
+node_modules
+dist
+server-dist
+dist-check
+.data
+.env
+*.tgz
+.DS_Store

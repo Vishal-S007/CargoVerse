@@ -1,0 +1,42 @@
+{
+  "name": "cargoverse",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:memory": "node scripts/dev.mjs --memory",
+    "server": "node scripts/build-server.mjs && node --enable-source-maps server-dist/index.mjs",
+    "build": "tsc --noEmit && tsc --noEmit -p server && vite build && node scripts/build-server.mjs",
+    "start": "node --enable-source-maps server-dist/index.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p server",
+    "db:up": "node scripts/db-up.mjs",
+    "db:down": "docker compose stop oracle",
+    "db:setup": "node scripts/build-server.mjs && node server-dist/setup.mjs",
+    "db:reset": "node scripts/build-server.mjs && node server-dist/setup.mjs --reset",
+    "db:gen-seed": "node scripts/build-server.mjs && node server-dist/gen-seed.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/fiber": "8.17.10",
+    "lucide-react": "0.453.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "three": "0.169.0",
+    "zustand": "4.5.5",
+    "oracledb": "6.6.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@types/three": "0.169.0",
+    "@vitejs/plugin-react": "4.3.3",
+    "typescript": "5.6.3",
+    "vite": "5.4.10",
+    "@types/node": "22.10.2",
+    "esbuild": "0.21.5"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

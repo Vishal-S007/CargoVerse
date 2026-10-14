@@ -1,0 +1,22 @@
+# Oracle Database Free for local development (multi-arch image: Intel and Apple Silicon).
+#   npm run db:up      start Oracle (first start takes a minute or two)
+#   npm run db:setup   create the CargoVerse schema and load the seed data
+services:
+  oracle:
+    image: gvenzl/oracle-free:23-slim-faststart
+    container_name: waretrack-oracle
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: Oracle_Admin_2026        # SYS / SYSTEM password
+      APP_USER: waretrack                       # schema owner created on first start
+      APP_USER_PASSWORD: WareTrack_2026
+    volumes:
+      - waretrack-oracle-data:/opt/oracle/oradata   # data survives container restarts
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+volumes:
+  waretrack-oracle-data:
