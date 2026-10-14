@@ -45,13 +45,23 @@ jobs:
       - name: Start Oracle (npm run db:up)
         run: npm run db:up
       - name: Create the schema (npm run db:setup)
-        run: npm run db:setup
+        run: npm run db:setup 2>&1 | tee setup.log
+        shell: bash -o pipefail -e {0}
       - name: Self-test (npm run db:selftest)
-        run: npm run db:selftest
+        run: npm run db:selftest 2>&1 | tee selftest.log
+        shell: bash -o pipefail -e {0}
       - name: Smoke test with Oracle
-        run: npm run smoke
+        run: npm run smoke 2>&1 | tee smoke.log
+        shell: bash -o pipefail -e {0}
         env:
           DB_MODE: oracle
-      - name: Oracle log on failure
+      - name: Report the failure as annotations
         if: failure()
-        run: docker logs --tail 200 waretrack-oracle
+        shell: bash
+        run: |
+          docker logs --tail 60 waretrack-oracle > oracle.log 2>&1 || true
+          for f in setup.log selftest.log smoke.log oracle.log; do
+            [ -s "$f" ] || continue
+            msg=$(tail -n 70 "$f" | sed 's/\x1b\[[0-9;]*m//g; s/%/%25/g; s/\r//g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=$f::$msg"
+          done
